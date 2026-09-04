@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+*.local
+.venv/
+__pycache__/
+*.pyc
+src-tauri/target/
+src-tauri/binaries/
+backend/build/
+backend/dist/
+backend/*.spec
+
+:memory:.ses
+*.log

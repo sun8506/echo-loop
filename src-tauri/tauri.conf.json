@@ -1,0 +1,35 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "EchoLoop",
+  "version": "0.1.0",
+  "identifier": "app.echoloop.studio",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "EchoLoop",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1050,
+        "minHeight": 700,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["deb", "appimage"],
+    "externalBin": ["binaries/echo-loop-backend"],
+    "resources": [],
+    "shortDescription": "Offline intensive listening and shadowing studio",
+    "longDescription": "Import media, loop selected passages, transcribe locally and practice shadowing."
+  }
+}
