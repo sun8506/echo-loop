@@ -12,15 +12,20 @@ import sys
 import tempfile
 import time
 import uuid
+import shutil
+from urllib.parse import quote
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from faster_whisper import WhisperModel
 from faster_whisper.audio import decode_audio
 from starlette.concurrency import run_in_threadpool
+from video_import import download_video, validate_source_url
 
 ModelName = Literal["tiny", "base", "small"]
 ALLOWED_MODELS = {"tiny", "base", "small"}
@@ -38,7 +43,24 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
+    expose_headers=["X-EchoLoop-Filename"],
 )
+
+class UrlImport(BaseModel): url: str
+
+@app.post('/import/url')
+async def import_url(payload:UrlImport,background_tasks:BackgroundTasks):
+    try: url=validate_source_url(payload.url)
+    except ValueError as exc: raise HTTPException(400,str(exc)) from exc
+    directory=tempfile.mkdtemp(prefix='echoloop-url-')
+    try:
+        path,name=await run_in_threadpool(download_video,url,directory)
+        background_tasks.add_task(shutil.rmtree,directory,True)
+        return FileResponse(path,media_type='video/mp4',filename=name,headers={'X-EchoLoop-Filename':quote(name,safe='')})
+    except Exception as exc:
+        shutil.rmtree(directory,ignore_errors=True);logger.exception('URL video import failed')
+        clean_error = re.sub(r"\x1b\[[0-9;]*m", "", str(exc))
+        raise HTTPException(422,f'网页视频加载失败：{clean_error}') from exc
 
 
 @lru_cache(maxsize=3)
@@ -58,6 +80,7 @@ def get_model(name: str) -> WhisperModel:
 def health() -> dict[str, object]:
     return {
         "ok": True,
+        "features": ["url-import-v1"],
         "provider": "local",
         "models": sorted(ALLOWED_MODELS),
         "whisperx": {"python": str(find_whisperx_python(probe_current=False) or "not found"), "offline": True},
@@ -94,24 +117,36 @@ def _join_cloud_words(words: list[str], language: str) -> str:
     return ("" if compact else " ").join(words).strip()
 
 
+_SUBTITLE_END_RE = re.compile(r"[。！？.!?…](?:[\"'”’」』）)\]]*)$")
+
+
+def _subtitle_text(text: object, language: str = "auto") -> str:
+    """Normalize an ASR cue and supply a missing sentence-ending mark."""
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not normalized or _SUBTITLE_END_RE.search(normalized):
+        return normalized
+    language_code = (language or "auto").lower()
+    return normalized + ("。" if language_code.startswith(("ja", "zh")) else ".")
+
+
 def _natural_cloud_cues(words: list[dict[str, object]], language: str) -> list[dict[str, object]]:
     cues: list[dict[str, object]] = []
     current: list[dict[str, object]] = []
     for word in words:
         if current and float(word["start"]) - float(current[-1]["end"]) >= 0.75:
             text = _join_cloud_words([str(item["text"]) for item in current], language)
-            cues.append({"start": current[0]["start"], "end": current[-1]["end"], "text": text})
+            cues.append({"start": current[0]["start"], "end": current[-1]["end"], "text": _subtitle_text(text, language)})
             current = []
         current.append(word)
         text = str(word["text"]).strip()
         duration = float(current[-1]["end"]) - float(current[0]["start"])
         if (text.endswith(("。", "！", "？", ".", "!", "?")) and duration >= 1) or duration >= 12:
             joined = _join_cloud_words([str(item["text"]) for item in current], language)
-            cues.append({"start": current[0]["start"], "end": current[-1]["end"], "text": joined})
+            cues.append({"start": current[0]["start"], "end": current[-1]["end"], "text": _subtitle_text(joined, language)})
             current = []
     if current:
         joined = _join_cloud_words([str(item["text"]) for item in current], language)
-        cues.append({"start": current[0]["start"], "end": current[-1]["end"], "text": joined})
+        cues.append({"start": current[0]["start"], "end": current[-1]["end"], "text": _subtitle_text(joined, language)})
     return cues
 
 
@@ -615,6 +650,10 @@ async def segment_with_whisperx(
             else:
                 natural.append({"start": round(start, 3), "end": round(max(end, start + 1), 3), "text": text})
 
+        resolved_language = str(payload.get("language") or language)
+        for item in natural:
+            item["text"] = _subtitle_text(item["text"], resolved_language)
+
         return {
             "provider": "whisperx-local",
             "model": payload["model"],
@@ -674,7 +713,7 @@ async def segment_with_nvidia(
                 "id": index,
                 "start": round(float(item["start"]), 3),
                 "end": round(max(float(item["end"]), float(item["start"]) + 1), 3),
-                "text": str(item["text"]).strip(),
+                "text": _subtitle_text(item["text"], str(payload.get("language") or language)),
             }
             for index, item in enumerate(payload["cues"], start=1)
             if str(item["text"]).strip()
@@ -752,7 +791,12 @@ async def transcribe(
             return list(generated), detected
         result, info = await run_in_threadpool(run_inference)
         cues = [
-            {"id": index, "start": round(item.start + start, 3), "end": round(item.end + start, 3), "text": item.text.strip()}
+            {
+                "id": index,
+                "start": round(item.start + start, 3),
+                "end": round(item.end + start, 3),
+                "text": _subtitle_text(item.text, info.language),
+            }
             for index, item in enumerate(result, start=1)
             if item.text.strip()
         ]

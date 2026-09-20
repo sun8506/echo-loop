@@ -1,0 +1,22 @@
+.app-shell,html,body,#root{width:100%;max-width:100%;min-width:0}
+html,body{overflow-x:clip}
+main,.topline,.workspace,.study-area,.media-card,.practice-card{min-width:0;max-width:100%}
+.topline{gap:20px}
+.topline>div:first-child{width:clamp(320px,52vw,760px);min-width:0;overflow:hidden}
+.topline h1{display:block;width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.top-actions{min-width:0;max-width:100%;flex-wrap:wrap;justify-content:flex-end}
+.wave-wrap{height:38px;padding:7px 17px 11px}
+.waveform{height:13px;overflow:hidden}
+.waveform i{transform:scaleY(.14);transform-origin:center}
+.range-label{top:5px;height:17px}
+.range-label:before,.range-label:after{height:17px}
+.range-label span{display:none}
+.scrubber{bottom:2px}
+.live-caption-area{position:relative;min-height:32px;padding:0 10px;border-top:1px solid var(--line)}
+.live-caption-area.open{min-height:78px;padding:0 10px}
+.live-caption-toggle{position:absolute;z-index:2;top:5px;right:8px;padding:4px 7px;font-size:9px;line-height:1.2;border-radius:6px}
+.live-caption-toggle svg{width:12px;height:12px}
+.live-caption{min-height:78px;padding:10px 60px 6px 12px;align-items:flex-start}
+.live-caption p{max-width:100%;font-size:16px;line-height:1.5}
+@media(max-width:1100px){.topline{align-items:flex-start;flex-wrap:wrap}.topline>div:first-child{width:min(100%,760px)}.top-actions{width:100%;justify-content:flex-start}}
+@media(max-width:900px){.topline>div:first-child{width:100%}}

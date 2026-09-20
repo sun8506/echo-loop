@@ -5,6 +5,7 @@
 ## 功能
 
 - 导入本地音频或视频并完整播放
+- 输入 TBS NewsDig 正文或 YouTube 单视频 URL，将视频临时下载后接入现有解析、精听和学习库流程
 - 使用 Web Audio API 读取真实音轨并绘制完整波形
 - 根据静音停顿自动切分音频（不使用 AI）
 - 单片段循环、连续多片段循环与变速播放
@@ -14,6 +15,9 @@
 - 页面重新打开时自动恢复最近一次学习项目
 
 当前版本的波形和静音切分完全在浏览器处理。原文生成可选择本机 `faster-whisper` 的 `tiny`、`base` 或 `small` 模型；媒体只提交到本机服务，临时文件在处理完成后立即删除。
+
+TBS NewsDig 导入需要在启动 EchoLoop 的终端中设置 `ECHOLOOP_TBS_STREAKS_API_KEY`。
+密钥只通过环境变量读取，不要写入代码或提交到 Git。YouTube 导入不需要配置该密钥。
 
 也可以在导入前选择 `NVIDIA 云端 · Large V3`，由 NVIDIA 托管的 Whisper Large V3
 生成原文和自然语句片段。先在 NVIDIA API Catalog 创建 API Key，然后在启动 EchoLoop

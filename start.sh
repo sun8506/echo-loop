@@ -27,8 +27,12 @@ if [[ ! -d "$project_dir/node_modules" ]]; then
   (cd "$project_dir" && npm install)
 fi
 
-if curl --silent --fail http://127.0.0.1:8000/health >/dev/null 2>&1; then
-  echo "后端已在 http://127.0.0.1:8000 运行，将直接复用。"
+if curl --silent --fail http://127.0.0.1:8000/health | grep -q 'url-import-v1'; then
+  echo "兼容后端已在 http://127.0.0.1:8000 运行，将直接复用。"
+elif curl --silent --fail http://127.0.0.1:8000/health >/dev/null 2>&1; then
+  echo "8000 端口运行的是旧版 Echo Loop 后端，不能安全复用。"
+  echo "请先停止旧进程，再重新执行 ./start.sh。"
+  exit 1
 else
   echo "正在启动本地转写服务：http://127.0.0.1:8000"
   (
