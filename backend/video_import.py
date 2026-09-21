@@ -37,7 +37,7 @@ def _download_with_ytdlp(source: str, directory: str) -> tuple[Path, dict]:
         "outtmpl": str(Path(directory) / "media.%(ext)s"),
         # Prefer a <=720p video/audio pair, then progressively fall back for
         # videos whose uploader/platform does not expose that exact shape.
-        "format": "bv*[height<=720]+ba/b[height<=720]/bv*+ba/b",
+        "format": "bv*[vcodec^=avc1][height<=720]+ba[ext=m4a]/b[ext=mp4][height<=720]/bv*[height<=720]+ba/b[height<=720]/bv*+ba/b",
         "merge_output_format": "mp4",
         "noplaylist": True,
         "max_filesize": MAX_BYTES,

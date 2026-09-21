@@ -1,1 +1,1 @@
-{"root":["./src/App.tsx","./src/LibraryPanel.tsx","./src/main.tsx","./src/storage.ts"],"version":"5.9.3"}
+{"root":["./src/App.tsx","./src/CourseImport.tsx","./src/LearnerApp.tsx","./src/LearnerAuth.tsx","./src/LearnerPortal.tsx","./src/LibraryPanel.tsx","./src/course.ts","./src/coursePackage.ts","./src/learnerApi.ts","./src/learnerStorage.ts","./src/main.tsx","./src/runtime.ts","./src/storage.ts","./src/vite-env.d.ts"],"version":"5.9.3"}

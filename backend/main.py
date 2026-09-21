@@ -6,6 +6,7 @@ import os
 import json
 import hashlib
 import logging
+import mimetypes
 import re
 import subprocess
 import sys
@@ -26,6 +27,7 @@ from faster_whisper import WhisperModel
 from faster_whisper.audio import decode_audio
 from starlette.concurrency import run_in_threadpool
 from video_import import download_video, validate_source_url
+from learner_api import router as learner_router
 
 ModelName = Literal["tiny", "base", "small"]
 ALLOWED_MODELS = {"tiny", "base", "small"}
@@ -45,6 +47,7 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["X-EchoLoop-Filename"],
 )
+app.include_router(learner_router)
 
 class UrlImport(BaseModel): url: str
 
@@ -56,7 +59,8 @@ async def import_url(payload:UrlImport,background_tasks:BackgroundTasks):
     try:
         path,name=await run_in_threadpool(download_video,url,directory)
         background_tasks.add_task(shutil.rmtree,directory,True)
-        return FileResponse(path,media_type='video/mp4',filename=name,headers={'X-EchoLoop-Filename':quote(name,safe='')})
+        media_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        return FileResponse(path,media_type=media_type,filename=name,headers={'X-EchoLoop-Filename':quote(name,safe='')})
     except Exception as exc:
         shutil.rmtree(directory,ignore_errors=True);logger.exception('URL video import failed')
         clean_error = re.sub(r"\x1b\[[0-9;]*m", "", str(exc))

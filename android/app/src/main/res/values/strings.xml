@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">EchoLoop 学习</string>
+    <string name="title_activity_main">EchoLoop 学习</string>
+    <string name="package_name">app.echoloop.learner</string>
+    <string name="custom_url_scheme">app.echoloop.learner</string>
+</resources>
