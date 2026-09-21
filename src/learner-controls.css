@@ -1,0 +1,54 @@
+.learner-speed-value {
+  color: inherit;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.learner-caption-reveal {
+  width: 100%;
+  min-height: 70px;
+  border: 1px dashed #cfd9d1;
+  border-radius: 12px;
+  background: #f2f6f2;
+  color: #66736c;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  cursor: pointer;
+}
+
+.learner-caption-reveal svg {
+  width: 16px;
+}
+
+.learner-caption-empty {
+  min-height: 92px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #66736c;
+}
+
+.learner-caption-empty > svg {
+  width: 22px;
+  flex: 0 0 auto;
+  color: #17614f;
+}
+
+.learner-caption-empty b {
+  color: #28352f;
+}
+
+.learner-caption-empty p {
+  margin: 5px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+@media (max-width: 760px) {
+  .learner-tools button {
+    min-width: 0;
+    font-size: 10px;
+  }
+}

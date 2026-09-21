@@ -14,6 +14,7 @@ import tempfile
 import time
 import uuid
 import shutil
+import requests
 from urllib.parse import quote
 from functools import lru_cache
 from pathlib import Path
@@ -28,6 +29,13 @@ from faster_whisper.audio import decode_audio
 from starlette.concurrency import run_in_threadpool
 from video_import import download_video, validate_source_url
 from learner_api import router as learner_router
+
+try:
+    from sudachipy import dictionary as sudachi_dictionary
+    from sudachipy import tokenizer as sudachi_tokenizer
+except ImportError:  # Report a clear configuration error through the API.
+    sudachi_dictionary = None
+    sudachi_tokenizer = None
 
 ModelName = Literal["tiny", "base", "small"]
 ALLOWED_MODELS = {"tiny", "base", "small"}
@@ -50,6 +58,123 @@ app.add_middleware(
 app.include_router(learner_router)
 
 class UrlImport(BaseModel): url: str
+
+
+class DeepLTranslateRequest(BaseModel):
+    texts: list[str]
+    target_language: Literal["ZH-HANS", "EN-US", "EN-GB"]
+    source_language: str | None = "JA"
+
+
+class JapaneseReadingRequest(BaseModel):
+    texts: list[str]
+
+
+@lru_cache(maxsize=1)
+def _japanese_tokenizer():
+    if sudachi_dictionary is None or sudachi_tokenizer is None:
+        raise RuntimeError("尚未安装 SudachiPy，请重新安装 backend/requirements.txt")
+    return sudachi_dictionary.Dictionary().create()
+
+
+def _katakana_to_hiragana(value: str) -> str:
+    return "".join(chr(ord(char) - 0x60) if "ァ" <= char <= "ヶ" else char for char in value)
+
+
+def _analyze_japanese(text: str) -> list[dict[str, str]]:
+    tokenizer = _japanese_tokenizer()
+    mode = sudachi_tokenizer.Tokenizer.SplitMode.C
+    result: list[dict[str, str]] = []
+    for morpheme in tokenizer.tokenize(text, mode):
+        surface = morpheme.surface()
+        item = {"surface": surface}
+        if re.search(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]", surface):
+            reading = morpheme.reading_form()
+            if reading and reading != "*":
+                item["reading"] = _katakana_to_hiragana(reading)
+            base_form = morpheme.dictionary_form()
+            if base_form and base_form != "*":
+                item["baseForm"] = base_form
+            parts = morpheme.part_of_speech()
+            if parts:
+                item["partOfSpeech"] = parts[0]
+        result.append(item)
+    return result
+
+
+@app.post("/reading/japanese")
+async def japanese_reading(payload: JapaneseReadingRequest) -> dict[str, object]:
+    texts = [text.strip() for text in payload.texts]
+    if not texts or any(not text for text in texts):
+        raise HTTPException(400, "原文不能为空")
+    if len(texts) > 500 or sum(len(text) for text in texts) > 200_000:
+        raise HTTPException(413, "单次处理内容过多，请分批处理")
+    try:
+        analyzed = await run_in_threadpool(lambda: [_analyze_japanese(text) for text in texts])
+        return {"items": analyzed, "count": len(analyzed), "provider": "sudachipy"}
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+def _deepl_base_url(api_key: str) -> str:
+    configured = os.getenv("DEEPL_API_BASE", "").strip().rstrip("/")
+    if configured:
+        return configured
+    return "https://api-free.deepl.com" if api_key.endswith(":fx") else "https://api.deepl.com"
+
+
+def _translate_deepl_batch(texts: list[str], target_language: str, source_language: str | None) -> list[str]:
+    api_key = os.getenv("DEEPL_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("尚未配置 DEEPL_API_KEY，请在后端环境变量中设置 DeepL API Key")
+    translated: list[str] = []
+    for offset in range(0, len(texts), 40):
+        chunk = texts[offset:offset + 40]
+        payload: dict[str, object] = {"text": chunk, "target_lang": target_language}
+        if source_language:
+            payload["source_lang"] = source_language
+        response = requests.post(
+            f"{_deepl_base_url(api_key)}/v2/translate",
+            headers={"Authorization": f"DeepL-Auth-Key {api_key}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=45,
+        )
+        if not response.ok:
+            try:
+                detail = response.json().get("message") or response.text
+            except ValueError:
+                detail = response.text
+            raise RuntimeError(f"DeepL 返回 HTTP {response.status_code}：{str(detail)[:300]}")
+        items = response.json().get("translations", [])
+        if len(items) != len(chunk):
+            raise RuntimeError("DeepL 返回的译文数量与原文不一致")
+        translated.extend(str(item.get("text", "")) for item in items)
+    return translated
+
+
+@app.get("/translate/deepl/status")
+def deepl_status() -> dict[str, object]:
+    return {"configured": bool(os.getenv("DEEPL_API_KEY", "").strip()), "provider": "deepl"}
+
+
+@app.post("/translate/deepl")
+async def translate_deepl(payload: DeepLTranslateRequest) -> dict[str, object]:
+    texts = [text.strip() for text in payload.texts]
+    if not texts or any(not text for text in texts):
+        raise HTTPException(400, "翻译内容不能为空")
+    if len(texts) > 200 or sum(len(text) for text in texts) > 100_000:
+        raise HTTPException(413, "单次翻译内容过多，请分批处理")
+    try:
+        translations = await run_in_threadpool(
+            _translate_deepl_batch, texts, payload.target_language, payload.source_language
+        )
+        return {"translations": translations, "provider": "deepl", "count": len(translations)}
+    except RuntimeError as exc:
+        message = str(exc)
+        status = 503 if "尚未配置" in message else 502
+        raise HTTPException(status, message) from exc
+    except requests.RequestException as exc:
+        raise HTTPException(502, f"无法连接 DeepL：{exc}") from exc
 
 @app.post('/import/url')
 async def import_url(payload:UrlImport,background_tasks:BackgroundTasks):

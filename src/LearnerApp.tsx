@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, Bookmark, Captions, Check, ChevronLeft, ChevronRight, Eye, EyeOff, Gauge, Import, LogOut, MessageCircle, Pause, Play, Repeat2, RotateCcw, UserRound, X } from 'lucide-react'
+import { ArrowLeft, Bookmark, Captions, Check, ChevronLeft, ChevronRight, Eye, EyeOff, Languages, LogOut, MessageCircle, MoreHorizontal, Pause, Play, Repeat2, RotateCcw, Star, UserRound, X } from 'lucide-react'
 import { getProject } from './storage'
 import type { LearningCourse, LearningProgress } from './course'
 import LearnerAuth from './LearnerAuth'
 import { getMe, getProgress, getStats, learnerApiUrl, logout, saveProgress, sendFeedback, TOKEN_KEY, type LearnerUser, type LearningStats } from './learnerApi'
 import { getOfflineCourse } from './learnerStorage'
 import { isNativeApp } from './runtime'
+import { saveSentence, saveWord, segmentJapanese } from './learnerVocabulary'
+import type { LearningToken } from './course'
+import LearnerBottomNav from './LearnerBottomNav'
+import { toHiragana } from './materialQuality'
 
 const formatTime = (seconds: number) => {
   const value = Number.isFinite(seconds) ? Math.max(0, seconds) : 0
@@ -86,9 +90,14 @@ export default function LearnerApp() {
   const [playing, setPlaying] = useState(false)
   const [position, setPosition] = useState(0)
   const [speed, setSpeed] = useState(1)
-  const [loopCue, setLoopCue] = useState(!isNativeApp)
-  const [showSubtitle, setShowSubtitle] = useState(true)
+  const [loopCue, setLoopCue] = useState(false)
+  const [showCaption, setShowCaption] = useState(true)
   const [captionExpanded, setCaptionExpanded] = useState(false)
+  const [selectedToken, setSelectedToken] = useState<LearningToken | null>(null)
+  const [translationLanguage, setTranslationLanguage] = useState(() => localStorage.getItem('echo-loop-translation-language') || 'zh-CN')
+  const [showTranslation, setShowTranslation] = useState(true)
+  const [showReading, setShowReading] = useState(true)
+  const [savedNotice, setSavedNotice] = useState('')
   const [completed, setCompleted] = useState<number[]>([])
   const [bookmarked, setBookmarked] = useState<number[]>([])
   const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY) || '')
@@ -106,6 +115,8 @@ export default function LearnerApp() {
 
   useEffect(() => {
     document.body.classList.add('learner-body')
+    window.history.scrollRestoration = 'manual'
+    window.scrollTo({ top: 0 })
     let revoke: (() => void) | undefined
     void loadCourse().then(result => {
       revoke = result.revoke
@@ -136,15 +147,20 @@ export default function LearnerApp() {
 
   const activeIndex = useMemo(() => {
     if (!course) return -1
+    if (!course.cues.length) return -1
     const exact = course.cues.findIndex(cue => position >= cue.start && position < cue.end)
     if (exact >= 0) return exact
     for (let index = course.cues.length - 1; index >= 0; index -= 1) {
       if (course.cues[index].start <= position) return index
     }
-    return -1
+    // Many subtitle files start a fraction of a second after the media. Show
+    // the first sentence while paused at 0:00 instead of rendering an empty
+    // learning area.
+    return 0
   }, [course, position])
   const activeCue = activeIndex >= 0 ? course?.cues[activeIndex] : undefined
-  const completion = course?.cues.length ? Math.round(completed.length / course.cues.length * 100) : 0
+  const activeTokens = useMemo(() => activeCue ? (activeCue.tokens?.length ? activeCue.tokens : segmentJapanese(activeCue.text)) : [], [activeCue])
+  const activeTranslation = activeCue?.translations?.[translationLanguage] || activeCue?.translation || ''
   progressRef.current = { position, speed, completedCueIds: completed, bookmarkedCueIds: bookmarked }
 
   useEffect(() => {
@@ -216,7 +232,11 @@ export default function LearnerApp() {
     }
   }, [activeCue?.id])
 
-  useEffect(() => setCaptionExpanded(false), [activeCue?.id])
+  useEffect(() => {
+    setCaptionExpanded(false)
+    setSelectedToken(null)
+    setSavedNotice('')
+  }, [activeCue?.id])
 
   const seek = (value: number) => {
     const media = mediaRef.current
@@ -236,6 +256,17 @@ export default function LearnerApp() {
     if (media.paused) void media.play()
     else media.pause()
   }
+  const cycleSpeed = () => {
+    const speeds = [0.75, 1, 1.25, 1.5]
+    const next = speeds[(speeds.indexOf(speed) + 1) % speeds.length]
+    setSpeed(next)
+    if (mediaRef.current) mediaRef.current.playbackRate = next
+  }
+  const replayCue = () => {
+    if (!activeCue) return
+    seek(activeCue.start)
+    void mediaRef.current?.play()
+  }
   const onTimeUpdate = () => {
     const media = mediaRef.current
     if (!media) return
@@ -249,12 +280,63 @@ export default function LearnerApp() {
       }
     }
   }
-  const changeSpeed = () => {
-    const speeds = [0.5, 0.75, 1, 1.25, 1.5]
-    const next = speeds[(speeds.indexOf(speed) + 1) % speeds.length]
-    setSpeed(next)
-    if (mediaRef.current) mediaRef.current.playbackRate = next
+  const notifySaved = (message: string) => {
+    setSavedNotice(message)
+    window.setTimeout(() => setSavedNotice(current => current === message ? '' : current), 1600)
   }
+  const addSelectedWord = () => {
+    if (!selectedToken || !course || !activeCue) return
+    saveWord(selectedToken, course.id, course.title, activeCue.id)
+    notifySaved(`“${selectedToken.surface}”已加入单词本`)
+  }
+  const addCurrentSentence = () => {
+    if (!course || !activeCue) return
+    saveSentence(activeCue, course.id, course.title)
+    setBookmarked(previous => previous.includes(activeCue.id) ? previous : [...previous, activeCue.id])
+    notifySaved('当前句已加入句子本')
+  }
+  const returnToLibrary = () => {
+    window.location.href = isNativeApp ? '/?screen=courses' : '/learn/courses'
+  }
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null
+      if (target?.matches('input, textarea, select, [contenteditable="true"]')) return
+      if (event.code === 'Space') {
+        event.preventDefault()
+        togglePlay()
+      } else if (event.key.toLowerCase() === 'w' && !event.repeat) {
+        addSelectedWord()
+      } else if (event.key.toLowerCase() === 's' && !event.repeat) {
+        addCurrentSentence()
+      } else if (event.key.toLowerCase() === 'r' && !event.repeat) {
+        replayCue()
+      } else if (event.key.toLowerCase() === 'l' && !event.repeat) {
+        setLoopCue(value => !value)
+      } else if (event.key.toLowerCase() === 'h' && !event.repeat) {
+        setShowCaption(value => !value)
+      } else if (event.key === 'ArrowLeft') {
+        event.preventDefault()
+        seek(position - 3)
+      } else if (event.key === 'ArrowRight') {
+        event.preventDefault()
+        seek(position + 3)
+      } else if (event.key === 'ArrowUp') {
+        event.preventDefault()
+        selectCue(activeIndex - 1)
+      } else if (event.key === 'ArrowDown') {
+        event.preventDefault()
+        selectCue(activeIndex + 1)
+      } else if (event.key.toLowerCase() === 't' && !event.repeat) {
+        setShowTranslation(value => !value)
+      } else if (event.key.toLowerCase() === 'f' && !event.repeat) {
+        setShowReading(value => !value)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [selectedToken, activeCue?.id, course?.id, position, activeIndex])
 
   if (authChecking) return <main className="learner-state"><span className="learner-spinner"/><h1>正在确认账户</h1><p>正在恢复你的学习记录…</p></main>
   if (!user) return <LearnerAuth onAuthenticated={(nextToken, nextUser) => { setToken(nextToken); setUser(nextUser); setAuthChecking(false) }} onOffline={() => setUser({ id: 'offline', email: '仅保存在当前设备', displayName: '离线学习' })}/>
@@ -263,11 +345,9 @@ export default function LearnerApp() {
 
   return <div className={`learner-shell ${isNativeApp ? 'native-learner' : ''}`}>
     <header className="learner-header">
-      {!isNativeApp && <button className="learner-back" onClick={() => { window.location.href = '/' }} aria-label="返回"><ArrowLeft/></button>}
+      <button className="learner-back" onClick={returnToLibrary} aria-label="返回素材库"><ArrowLeft/></button>
       <div><span>{course.language || '语言学习'}{course.level ? ` · ${course.level}` : ''}</span><h1>{course.title}</h1></div>
-      {isNativeApp
-        ? <button className="native-import-button" onClick={() => { window.location.href = '/' }}><Import/>素材库</button>
-        : <div className="learner-header-actions"><button onClick={() => setFeedbackOpen(true)} aria-label="反馈"><MessageCircle/></button><button onClick={() => { setAccountOpen(true); if(token)void getStats(token).then(setStats);else setStats({totalSeconds:courseSeconds,courseCount:1,completedCueCount:completed.length}) }} aria-label="账户"><UserRound/></button><strong>{completion}%</strong></div>}
+      <button className="learner-more" onClick={() => { setAccountOpen(true); if(token)void getStats(token).then(setStats);else setStats({totalSeconds:courseSeconds,courseCount:1,completedCueCount:completed.length}) }} aria-label="更多"><MoreHorizontal/></button>
     </header>
     <main className="learner-main">
       <section className="learner-player-card">
@@ -283,17 +363,22 @@ export default function LearnerApp() {
           <button className="learner-play" onClick={togglePlay} aria-label={playing ? '暂停' : '播放'}>{playing ? <Pause fill="currentColor"/> : <Play fill="currentColor"/>}</button>
           <button onClick={() => selectCue(activeIndex + 1)} aria-label="下一句"><ChevronRight/></button>
         </div>
-        {showSubtitle && activeCue && <section className={`learner-current-caption ${captionExpanded ? 'expanded' : ''}`}>
-          <header><span>当前句</span><small>{activeIndex + 1} / {course.cues.length}</small></header>
-          <div className="learner-current-copy"><p>{activeCue.text}</p>{activeCue.translation && <small>{activeCue.translation}</small>}</div>
-          {(activeCue.text.length > 58 || (activeCue.translation?.length || 0) > 76) && <button onClick={() => setCaptionExpanded(value => !value)}>{captionExpanded ? '收起' : '展开全文'}</button>}
-        </section>}
-        {!isNativeApp && <div className="learner-tools">
+        <div className="learner-tools" aria-label="学习播放操作">
           <button className={loopCue ? 'active' : ''} onClick={() => setLoopCue(value => !value)}><Repeat2/>单句循环</button>
-          <button onClick={changeSpeed}><Gauge/>{speed}×</button>
-          <button onClick={() => setShowSubtitle(value => !value)}>{showSubtitle ? <EyeOff/> : <Eye/>}{showSubtitle ? '隐藏字幕' : '显示字幕'}</button>
-          <button onClick={() => seek(activeCue?.start || 0)}><RotateCcw/>重听</button>
-        </div>}
+          <button onClick={cycleSpeed}><span className="learner-speed-value">{speed}×</span>播放速度</button>
+          <button className={!showCaption ? 'active' : ''} onClick={() => setShowCaption(value => !value)}>{showCaption ? <EyeOff/> : <Eye/>}{showCaption ? '隐藏字幕' : '显示字幕'}</button>
+          <button onClick={replayCue}><RotateCcw/>重听本句</button>
+        </div>
+        {activeCue && <section className={`learner-current-caption ${captionExpanded ? 'expanded' : ''}`}>
+          <header><div className="learner-caption-heading"><span>当前句</span><button className={`learner-reading-toggle ${showReading ? 'active' : ''}`} onClick={() => setShowReading(value => !value)}><i/>平假名</button><button className={`learner-reading-toggle ${showTranslation ? 'active' : ''}`} onClick={() => setShowTranslation(value => !value)}><i/>译文</button>{(activeCue.text.length > 58 || activeTranslation.length > 76) && <button className="learner-inline-expand" onClick={() => setCaptionExpanded(value => !value)}>{captionExpanded ? '收起' : '显示全文'}</button>}</div><small>{activeIndex + 1} / {course.cues.length}</small></header>
+          {showCaption ? <>
+            <div className="learner-token-line">{activeTokens.map((word, index) => /[\p{L}\p{N}]/u.test(word.surface) ? <button key={`${word.surface}-${index}`} className={selectedToken === word ? 'selected' : ''} onClick={() => setSelectedToken(word)}>{showReading && /\p{Script=Han}/u.test(word.surface) && (word.reading || word.readingKatakana) ? <ruby>{word.surface}<rt>{toHiragana(word.reading || word.readingKatakana || '')}</rt></ruby> : word.surface}</button> : <span key={`${word.surface}-${index}`}>{word.surface}</span>)}</div>
+            {showTranslation && <div className="learner-translation"><label><Languages/><select value={translationLanguage} onChange={event => { setTranslationLanguage(event.target.value); localStorage.setItem('echo-loop-translation-language', event.target.value) }}><option value="zh-CN">中文</option><option value="en">English</option></select></label><p>{activeTranslation || '当前学习包暂未提供译文'}</p></div>}
+          </> : <button className="learner-caption-reveal" onClick={() => setShowCaption(true)}><Eye/>字幕已隐藏，点击显示</button>}
+          <div className="learner-caption-actions"><button disabled={!selectedToken} onClick={addSelectedWord}><Star fill={selectedToken ? 'currentColor' : 'none'}/>{selectedToken ? `加入“${selectedToken.surface}”` : '先选择单词'}<kbd>W</kbd></button><button className={bookmarked.includes(activeCue.id) ? 'saved' : ''} onClick={addCurrentSentence}><Bookmark fill={bookmarked.includes(activeCue.id) ? 'currentColor' : 'none'}/>收藏句子<kbd>S</kbd></button></div>
+          {savedNotice && <div className="learner-saved-notice">{savedNotice}</div>}
+        </section>}
+        {!activeCue && <section className="learner-current-caption learner-caption-empty"><Captions/><div><b>这个素材没有可用字幕</b><p>请回到制作端生成或导入字幕，完成素材检查后重新导出。</p></div></section>}
       </section>
 
       <section className="learner-transcript">
@@ -307,6 +392,7 @@ export default function LearnerApp() {
         </div>
       </section>
     </main>
+    <LearnerBottomNav active="study"/>
     {accountOpen && <div className="learner-modal-backdrop" onMouseDown={() => setAccountOpen(false)}><section className="learner-modal" onMouseDown={event => event.stopPropagation()}><button className="learner-modal-close" onClick={() => setAccountOpen(false)}><X/></button><div className="learner-account-head"><span><UserRound/></span><div><h2>{user.displayName}</h2><p>{user.email}</p></div></div><div className="learner-stats"><div><b>{formatTime(stats?.totalSeconds || 0)}</b><span>累计学习</span></div><div><b>{stats?.courseCount || 0}</b><span>学习课程</span></div><div><b>{stats?.completedCueCount || 0}</b><span>完成句子</span></div></div><button className="learner-logout" onClick={() => { if(token)void logout(token); localStorage.removeItem(TOKEN_KEY); setToken(''); setUser(null); setAccountOpen(false) }}><LogOut/>{token?'退出登录':'退出离线学习'}</button></section></div>}
     {feedbackOpen && <div className="learner-modal-backdrop" onMouseDown={() => setFeedbackOpen(false)}><section className="learner-modal" onMouseDown={event => event.stopPropagation()}><button className="learner-modal-close" onClick={() => setFeedbackOpen(false)}><X/></button><h2>学习反馈</h2><p className="learner-modal-note">{token?'反馈会附带当前课程和播放位置，方便我们快速定位。':'当前为离线学习。登录后才能将反馈发送到服务器。'}</p><label className="learner-feedback-field">问题类型<select value={feedbackCategory} onChange={event => setFeedbackCategory(event.target.value)}><option value="general">一般反馈</option><option value="subtitle">字幕问题</option><option value="media">播放问题</option><option value="suggestion">功能建议</option></select></label><label className="learner-feedback-field">反馈内容<textarea value={feedbackMessage} onChange={event => setFeedbackMessage(event.target.value)} placeholder="请描述遇到的问题或你的建议…" maxLength={2000}/></label>{feedbackStatus && <p className="learner-feedback-status">{feedbackStatus}</p>}<button className="learner-feedback-submit" disabled={!token||feedbackMessage.trim().length < 5} onClick={() => { setFeedbackStatus('正在发送…'); void sendFeedback(token,{courseId:course.id,category:feedbackCategory,message:feedbackMessage,position}).then(() => { setFeedbackStatus('已收到，感谢你的反馈'); setFeedbackMessage('') }).catch(reason => setFeedbackStatus(reason instanceof Error ? reason.message : '发送失败')) }}><MessageCircle/>提交反馈</button></section></div>}
   </div>

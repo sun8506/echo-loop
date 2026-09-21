@@ -4,6 +4,7 @@ set -euo pipefail
 project_dir="$(cd "$(dirname "$0")" && pwd)"
 backend_python="$project_dir/backend/.venv/bin/python"
 backend_pid=""
+env_file="$project_dir/.env"
 
 cleanup() {
   if [[ -n "$backend_pid" ]] && kill -0 "$backend_pid" 2>/dev/null; then
@@ -22,13 +23,28 @@ if [[ ! -x "$backend_python" ]]; then
   exit 1
 fi
 
+# Load local service credentials for both the transcription and translation
+# backends. Keep them in the environment only; never print their values.
+if [[ -f "$env_file" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$env_file"
+  set +a
+  echo "已加载本地配置：.env"
+fi
+
 if [[ ! -d "$project_dir/node_modules" ]]; then
   echo "首次运行，正在安装前端依赖..."
   (cd "$project_dir" && npm install)
 fi
 
 if curl --silent --fail http://127.0.0.1:8000/health | grep -q 'url-import-v1'; then
-  echo "兼容后端已在 http://127.0.0.1:8000 运行，将直接复用。"
+  if [[ -n "${DEEPL_API_KEY:-}" ]] && ! curl --silent --fail http://127.0.0.1:8000/translate/deepl/status | grep -Eq '"configured"[[:space:]]*:[[:space:]]*true'; then
+    echo "8000 端口上的后端没有加载当前 DeepL 配置。"
+    echo "请先在原终端按 Ctrl+C 停止旧服务，再重新执行 ./start.sh。"
+    exit 1
+  fi
+  echo "兼容后端已在 http://127.0.0.1:8000 运行，并已加载当前配置，将直接复用。"
 elif curl --silent --fail http://127.0.0.1:8000/health >/dev/null 2>&1; then
   echo "8000 端口运行的是旧版 Echo Loop 后端，不能安全复用。"
   echo "请先停止旧进程，再重新执行 ./start.sh。"

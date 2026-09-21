@@ -6,7 +6,7 @@ export const MAX_COURSE_PACKAGE_BYTES = 800 * 1024 * 1024
 
 export type CoursePackageManifest = {
   format: 'echoloop-course'
-  version: 1
+  version: 1 | 2
   id: string
   title: string
   description: string
@@ -16,6 +16,7 @@ export type CoursePackageManifest = {
   media: { file: string; type: string; size: number }
   cues: LearningCue[]
   segments: Array<{ id: number; start: number; end: number }>
+  features?: { tokenization: boolean; reading: boolean; hiragana?: boolean; katakana?: boolean; translations: string[] }
 }
 
 export type ImportedCoursePackage = {
@@ -42,7 +43,7 @@ export function exportCoursePackage(input: {
   const mediaPath = `media/source${extension}`
   const manifest: CoursePackageManifest = {
     format: 'echoloop-course',
-    version: 1,
+    version: 2,
     id: input.id || crypto.randomUUID(),
     title: input.title || input.mediaName.replace(/\.[^.]+$/, ''),
     description: input.description || '',
@@ -52,6 +53,13 @@ export function exportCoursePackage(input: {
     media: { file: mediaPath, type: input.mediaType || 'application/octet-stream', size: input.media.size },
     cues: input.cues,
     segments: input.segments,
+    features: {
+      tokenization: input.cues.some(cue => Boolean(cue.tokens?.length)),
+      reading: input.cues.some(cue => Boolean(cue.reading || cue.tokens?.some(token => token.reading))),
+      hiragana: input.cues.some(cue => Boolean(cue.reading || cue.tokens?.some(token => token.reading))),
+      katakana: input.cues.some(cue => Boolean(cue.readingKatakana || cue.tokens?.some(token => token.readingKatakana))),
+      translations: [...new Set(input.cues.flatMap(cue => Object.keys(cue.translations || {}).concat(cue.translation ? ['zh-CN'] : [])))],
+    },
   }
   return input.media.arrayBuffer().then(buffer => new Promise((resolve, reject) => {
     zip({
@@ -82,7 +90,7 @@ export async function importCoursePackage(file: File): Promise<ImportedCoursePac
   } catch {
     throw new Error('素材清单无法读取')
   }
-  if (manifest.format !== 'echoloop-course' || manifest.version !== 1) throw new Error('不支持的学习包版本')
+  if (manifest.format !== 'echoloop-course' || ![1, 2].includes(manifest.version)) throw new Error('不支持的学习包版本')
   if (!manifest.id || !manifest.title || !Number.isFinite(manifest.duration) || !Array.isArray(manifest.cues)) throw new Error('素材资料不完整')
   const mediaBytes = archive[manifest.media?.file]
   if (!mediaBytes || !mediaBytes.byteLength) throw new Error('学习包中没有媒体文件')

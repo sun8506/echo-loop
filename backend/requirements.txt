@@ -5,3 +5,5 @@ faster-whisper==1.1.1
 requests==2.32.5
 nvidia-riva-client==2.27.0
 yt-dlp==2026.8.19
+sudachipy==0.6.10
+sudachidict-core==20250825

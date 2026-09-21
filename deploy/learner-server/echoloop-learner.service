@@ -1,0 +1,21 @@
+[Unit]
+Description=EchoLoop Learner API
+After=network.target
+
+[Service]
+Type=simple
+User=echoloop
+Group=echoloop
+WorkingDirectory=/opt/echoloop/backend
+EnvironmentFile=/etc/echoloop/learner-server.env
+ExecStart=/opt/echoloop/backend/.venv-learner/bin/python -m uvicorn learner_server:app --host 127.0.0.1 --port 8010 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=on-failure
+RestartSec=5
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/echoloop
+
+[Install]
+WantedBy=multi-user.target

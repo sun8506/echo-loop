@@ -1,5 +1,7 @@
 export type StoredSegment = { id: number; start: number; end: number }
-export type StoredCue = { id: number; start: number; end: number; text: string; edited?: boolean }
+import type { LearningCue } from './course'
+
+export type StoredCue = LearningCue & { edited?: boolean }
 
 export type StoredProject = {
   id: string
