@@ -6,6 +6,7 @@ import os
 import json
 import hashlib
 import logging
+import mimetypes
 import re
 import subprocess
 import sys
@@ -13,6 +14,7 @@ import tempfile
 import time
 import uuid
 import shutil
+import requests
 from urllib.parse import quote
 from functools import lru_cache
 from pathlib import Path
@@ -26,6 +28,14 @@ from faster_whisper import WhisperModel
 from faster_whisper.audio import decode_audio
 from starlette.concurrency import run_in_threadpool
 from video_import import download_video, validate_source_url
+from learner_api import router as learner_router
+
+try:
+    from sudachipy import dictionary as sudachi_dictionary
+    from sudachipy import tokenizer as sudachi_tokenizer
+except ImportError:  # Report a clear configuration error through the API.
+    sudachi_dictionary = None
+    sudachi_tokenizer = None
 
 ModelName = Literal["tiny", "base", "small"]
 ALLOWED_MODELS = {"tiny", "base", "small"}
@@ -34,6 +44,7 @@ NVIDIA_WHISPER_FUNCTION_ID = "b702f636-f60c-4a3d-a6f4-f3568c13bd7d"
 NVIDIA_STATUS: dict[str, object] = {"state": "idle", "message": "尚未使用高级模型"}
 LOCAL_STATUS: dict[str, object] = {"state": "idle", "message": "尚未开始局部转写"}
 NVIDIA_TRACE: dict[str, object] = {"request_id": None, "items": []}
+CANCELLED_JOBS: set[str] = set()
 
 app = FastAPI(title="EchoLoop Local Transcription", version="0.1.0")
 app.add_middleware(
@@ -45,22 +56,147 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["X-EchoLoop-Filename"],
 )
+app.include_router(learner_router)
 
-class UrlImport(BaseModel): url: str
+class UrlImport(BaseModel):
+    url: str
+    request_id: str = ""
+
+
+class DeepLTranslateRequest(BaseModel):
+    texts: list[str]
+    target_language: Literal["ZH-HANS", "EN-US", "EN-GB"]
+    source_language: str | None = "JA"
+
+
+class JapaneseReadingRequest(BaseModel):
+    texts: list[str]
+
+
+@lru_cache(maxsize=1)
+def _japanese_tokenizer():
+    if sudachi_dictionary is None or sudachi_tokenizer is None:
+        raise RuntimeError("尚未安装 SudachiPy，请重新安装 backend/requirements.txt")
+    return sudachi_dictionary.Dictionary().create()
+
+
+def _katakana_to_hiragana(value: str) -> str:
+    return "".join(chr(ord(char) - 0x60) if "ァ" <= char <= "ヶ" else char for char in value)
+
+
+def _analyze_japanese(text: str) -> list[dict[str, str]]:
+    tokenizer = _japanese_tokenizer()
+    mode = sudachi_tokenizer.Tokenizer.SplitMode.C
+    result: list[dict[str, str]] = []
+    for morpheme in tokenizer.tokenize(text, mode):
+        surface = morpheme.surface()
+        item = {"surface": surface}
+        if re.search(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]", surface):
+            reading = morpheme.reading_form()
+            if reading and reading != "*":
+                item["reading"] = _katakana_to_hiragana(reading)
+            base_form = morpheme.dictionary_form()
+            if base_form and base_form != "*":
+                item["baseForm"] = base_form
+            parts = morpheme.part_of_speech()
+            if parts:
+                item["partOfSpeech"] = parts[0]
+        result.append(item)
+    return result
+
+
+@app.post("/reading/japanese")
+async def japanese_reading(payload: JapaneseReadingRequest) -> dict[str, object]:
+    texts = [text.strip() for text in payload.texts]
+    if not texts or any(not text for text in texts):
+        raise HTTPException(400, "原文不能为空")
+    if len(texts) > 500 or sum(len(text) for text in texts) > 200_000:
+        raise HTTPException(413, "单次处理内容过多，请分批处理")
+    try:
+        analyzed = await run_in_threadpool(lambda: [_analyze_japanese(text) for text in texts])
+        return {"items": analyzed, "count": len(analyzed), "provider": "sudachipy"}
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+def _deepl_base_url(api_key: str) -> str:
+    configured = os.getenv("DEEPL_API_BASE", "").strip().rstrip("/")
+    if configured:
+        return configured
+    return "https://api-free.deepl.com" if api_key.endswith(":fx") else "https://api.deepl.com"
+
+
+def _translate_deepl_batch(texts: list[str], target_language: str, source_language: str | None) -> list[str]:
+    api_key = os.getenv("DEEPL_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("尚未配置 DEEPL_API_KEY，请在后端环境变量中设置 DeepL API Key")
+    translated: list[str] = []
+    for offset in range(0, len(texts), 40):
+        chunk = texts[offset:offset + 40]
+        payload: dict[str, object] = {"text": chunk, "target_lang": target_language}
+        if source_language:
+            payload["source_lang"] = source_language
+        response = requests.post(
+            f"{_deepl_base_url(api_key)}/v2/translate",
+            headers={"Authorization": f"DeepL-Auth-Key {api_key}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=45,
+        )
+        if not response.ok:
+            try:
+                detail = response.json().get("message") or response.text
+            except ValueError:
+                detail = response.text
+            raise RuntimeError(f"DeepL 返回 HTTP {response.status_code}：{str(detail)[:300]}")
+        items = response.json().get("translations", [])
+        if len(items) != len(chunk):
+            raise RuntimeError("DeepL 返回的译文数量与原文不一致")
+        translated.extend(str(item.get("text", "")) for item in items)
+    return translated
+
+
+@app.get("/translate/deepl/status")
+def deepl_status() -> dict[str, object]:
+    return {"configured": bool(os.getenv("DEEPL_API_KEY", "").strip()), "provider": "deepl"}
+
+
+@app.post("/translate/deepl")
+async def translate_deepl(payload: DeepLTranslateRequest) -> dict[str, object]:
+    texts = [text.strip() for text in payload.texts]
+    if not texts or any(not text for text in texts):
+        raise HTTPException(400, "翻译内容不能为空")
+    if len(texts) > 200 or sum(len(text) for text in texts) > 100_000:
+        raise HTTPException(413, "单次翻译内容过多，请分批处理")
+    try:
+        translations = await run_in_threadpool(
+            _translate_deepl_batch, texts, payload.target_language, payload.source_language
+        )
+        return {"translations": translations, "provider": "deepl", "count": len(translations)}
+    except RuntimeError as exc:
+        message = str(exc)
+        status = 503 if "尚未配置" in message else 502
+        raise HTTPException(status, message) from exc
+    except requests.RequestException as exc:
+        raise HTTPException(502, f"无法连接 DeepL：{exc}") from exc
 
 @app.post('/import/url')
 async def import_url(payload:UrlImport,background_tasks:BackgroundTasks):
     try: url=validate_source_url(payload.url)
     except ValueError as exc: raise HTTPException(400,str(exc)) from exc
+    request_id=payload.request_id if re.fullmatch(r"[A-Za-z0-9_-]{8,64}",payload.request_id) else ""
     directory=tempfile.mkdtemp(prefix='echoloop-url-')
     try:
-        path,name=await run_in_threadpool(download_video,url,directory)
+        path,name=await run_in_threadpool(download_video,url,directory,(lambda:_check_job_cancelled(request_id)) if request_id else None)
         background_tasks.add_task(shutil.rmtree,directory,True)
-        return FileResponse(path,media_type='video/mp4',filename=name,headers={'X-EchoLoop-Filename':quote(name,safe='')})
+        media_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        return FileResponse(path,media_type=media_type,filename=name,headers={'X-EchoLoop-Filename':quote(name,safe='')})
     except Exception as exc:
         shutil.rmtree(directory,ignore_errors=True);logger.exception('URL video import failed')
         clean_error = re.sub(r"\x1b\[[0-9;]*m", "", str(exc))
         raise HTTPException(422,f'网页视频加载失败：{clean_error}') from exc
+    finally:
+        if request_id:
+            CANCELLED_JOBS.discard(request_id)
 
 
 @lru_cache(maxsize=3)
@@ -101,6 +237,38 @@ def nvidia_trace() -> dict[str, object]:
 
 def _set_nvidia_status(**values: object) -> None:
     NVIDIA_STATUS.update(values)
+
+
+def _check_job_cancelled(request_id: str) -> None:
+    if request_id in CANCELLED_JOBS:
+        raise HTTPException(409, "素材制作已停止，已下载文件仍可继续使用")
+
+
+def _nvidia_recognize_with_timeout(service, audio_bytes: bytes, config, request_id: str, timeout: float = 90):
+    """Wait for one NVIDIA request without allowing a stalled gRPC call to block a course forever."""
+    import grpc
+
+    call = service.offline_recognize(audio_bytes, config, future=True)
+    deadline = time.monotonic() + timeout
+    while True:
+        _check_job_cancelled(request_id)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            call.cancel()
+            raise HTTPException(504, f"NVIDIA 单句解析超过 {int(timeout)} 秒，任务已暂停，可稍后继续")
+        try:
+            return call.result(timeout=min(1.0, remaining))
+        except grpc.FutureTimeoutError:
+            continue
+
+
+@app.post("/segment/cancel/{request_id}")
+def cancel_segment_job(request_id: str) -> dict[str, object]:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", request_id):
+        raise HTTPException(400, "无效的任务编号")
+    CANCELLED_JOBS.add(request_id)
+    _set_nvidia_status(state="cancelled", request_id=request_id, message="用户已停止素材制作")
+    return {"ok": True, "request_id": request_id, "state": "cancelled"}
 
 
 @app.get("/transcribe/status")
@@ -418,7 +586,9 @@ def transcribe_hybrid(path: str, language: str, model: str, request_id: str) -> 
         state="local_aligning", request_id=request_id,
         message=f"第一阶段：本地 WhisperX {model} 正在生成自然句时间戳",
     )
-    aligned = transcribe_with_whisperx(path, local_language, model)
+    _check_job_cancelled(request_id)
+    aligned = transcribe_with_whisperx(path, local_language, model, request_id)
+    _check_job_cancelled(request_id)
     timed_segments = [
         item for item in aligned.get("segments", [])
         if str(item.get("text", "")).strip() and float(item.get("end", 0)) > float(item.get("start", 0))
@@ -449,6 +619,7 @@ def transcribe_hybrid(path: str, language: str, model: str, request_id: str) -> 
     started = time.monotonic()
     total = len(timed_segments)
     for index, item in enumerate(timed_segments, start=1):
+        _check_job_cancelled(request_id)
         start = max(0.0, float(item["start"]))
         end = min(len(pcm) / 16000, float(item["end"]))
         # Preserve enough acoustic context around an alignment edge without
@@ -493,7 +664,9 @@ def transcribe_hybrid(path: str, language: str, model: str, request_id: str) -> 
         }
         call_started = time.monotonic()
         try:
-            response = service.offline_recognize(audio_bytes, config)
+            logger.warning("NVIDIA [%s] refining sentence %s/%s", request_id, index, total)
+            response = _nvidia_recognize_with_timeout(service, audio_bytes, config, request_id)
+            _check_job_cancelled(request_id)
             trace_item["elapsed_seconds"] = round(time.monotonic() - call_started, 3)
             trace_item["response"] = MessageToDict(
                 response, preserving_proto_field_name=True,
@@ -504,6 +677,10 @@ def transcribe_hybrid(path: str, language: str, model: str, request_id: str) -> 
             NVIDIA_TRACE.setdefault("items", []).append(trace_item)
             raise
         NVIDIA_TRACE.setdefault("items", []).append(trace_item)
+        logger.warning(
+            "NVIDIA [%s] returned sentence %s/%s in %.2fs",
+            request_id, index, total, time.monotonic() - call_started,
+        )
         cloud_text = " ".join(
             result.alternatives[0].transcript.strip()
             for result in response.results
@@ -574,7 +751,7 @@ def find_whisperx_python(probe_current: bool = True) -> Path | None:
     return None
 
 
-def transcribe_with_whisperx(path: str, language: str, model: str = "tiny") -> dict[str, object]:
+def transcribe_with_whisperx(path: str, language: str, model: str = "tiny", request_id: str = "") -> dict[str, object]:
     python = find_whisperx_python()
     if not python:
         raise HTTPException(
@@ -586,28 +763,40 @@ def transcribe_with_whisperx(path: str, language: str, model: str = "tiny") -> d
     environment = os.environ.copy()
     environment.setdefault("TORCH_HOME", "/projects/temp/.cache/torch")
     environment.setdefault("MPLCONFIGDIR", "/projects/temp/.cache/matplotlib")
-    completed = subprocess.run(
+    process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
         # Keep WhisperX/CUDA diagnostics visible in the backend terminal.
         stderr=None,
         text=True,
         encoding="utf-8",
-        timeout=3600,
-        check=False,
         env=environment,
     )
-    output = completed.stdout.strip().splitlines()
-    stderr_tail = completed.stderr.strip()[-2000:] if completed.stderr else ""
+    deadline = time.monotonic() + 3600
+    while process.poll() is None:
+        if request_id and request_id in CANCELLED_JOBS:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+            raise HTTPException(409, "素材制作已停止，已下载文件仍可继续使用")
+        if time.monotonic() >= deadline:
+            process.kill()
+            raise subprocess.TimeoutExpired(command, 3600)
+        time.sleep(0.25)
+    stdout, stderr = process.communicate()
+    output = (stdout or "").strip().splitlines()
+    stderr_tail = (stderr or "").strip()[-2000:]
     try:
         payload = json.loads(output[-1]) if output else {}
     except json.JSONDecodeError as exc:
-        detail = stderr_tail or completed.stdout.strip()[-2000:] or "没有输出"
+        detail = stderr_tail or (stdout or "").strip()[-2000:] or "没有输出"
         logger.error("WhisperX returned invalid JSON: %s", detail)
         raise HTTPException(500, f"WhisperX 返回格式错误：{detail[-500:]}") from exc
-    if completed.returncode != 0 or payload.get("error"):
+    if process.returncode != 0 or payload.get("error"):
         detail = payload.get("error") or stderr_tail[-500:] or "未知错误"
-        logger.error("WhisperX failed (exit %s): %s", completed.returncode, detail)
+        logger.error("WhisperX failed (exit %s): %s", process.returncode, detail)
         raise HTTPException(500, f"WhisperX 离线解析失败：{detail}")
     logger.warning(
         "WhisperX completed with device=%s model=%s segments=%s",
@@ -623,6 +812,7 @@ async def segment_with_whisperx(
     media: Annotated[UploadFile, File()],
     language: Annotated[str, Form()] = "auto",
     model: Annotated[ModelName, Form()] = "tiny",
+    request_id: Annotated[str, Form()] = "",
 ) -> dict[str, object]:
     if model not in ALLOWED_MODELS:
         raise HTTPException(400, "Unsupported WhisperX model")
@@ -632,10 +822,12 @@ async def segment_with_whisperx(
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as target:
             temp_path = target.name
             while chunk := await media.read(1024 * 1024):
+                if request_id:
+                    _check_job_cancelled(request_id)
                 target.write(chunk)
 
         logger.info("WhisperX natural segmentation started: file=%s model=%s", media.filename, model)
-        payload = transcribe_with_whisperx(temp_path, language, model)
+        payload = transcribe_with_whisperx(temp_path, language, model, request_id)
         natural = []
         for item in payload["segments"]:
             start = max(0.0, float(item["start"]))
@@ -683,6 +875,8 @@ async def segment_with_whisperx(
                 os.unlink(temp_path)
             except FileNotFoundError:
                 pass
+        if request_id:
+            CANCELLED_JOBS.discard(request_id)
 
 
 @app.post("/segment/nvidia")
@@ -692,16 +886,18 @@ async def segment_with_nvidia(
     model: Annotated[ModelName, Form()] = "tiny",
     expected_duration: Annotated[float, Form()] = 0,
     expected_bytes: Annotated[int, Form()] = 0,
+    request_id: Annotated[str, Form()] = "",
 ) -> dict[str, object]:
     suffix = Path(media.filename or "media.bin").suffix or ".bin"
     temp_path = ""
-    request_id = uuid.uuid4().hex[:8]
+    request_id = request_id if re.fullmatch(r"[A-Za-z0-9_-]{8,64}", request_id) else uuid.uuid4().hex[:8]
     try:
         NVIDIA_TRACE.clear()
         NVIDIA_TRACE.update({"request_id": request_id, "started_at": time.time(), "items": []})
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as target:
             temp_path = target.name
             while chunk := await media.read(1024 * 1024):
+                _check_job_cancelled(request_id)
                 target.write(chunk)
         logger.warning("NVIDIA [%s] request accepted: file=%s", request_id, media.filename)
         _set_nvidia_status(state="accepted", request_id=request_id, message="后端已收到音频，准备本地时间戳分析")
@@ -736,6 +932,7 @@ async def segment_with_nvidia(
                 os.unlink(temp_path)
             except FileNotFoundError:
                 pass
+        CANCELLED_JOBS.discard(request_id)
 
 
 @app.post("/transcribe")
@@ -827,3 +1024,154 @@ async def transcribe(
                 os.unlink(temp_path)
             except FileNotFoundError:
                 pass
+
+
+def _make_media_clip(
+    source_path: str, start: float, end: float, output_suffix: str,
+    publish: bool = False, video_mask: dict[str, object] | None = None,
+) -> str:
+    if start < 0 or end <= start:
+        raise HTTPException(400, "时间范围无效")
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise HTTPException(503, "本机未安装 ffmpeg")
+    target = tempfile.NamedTemporaryFile(delete=False, suffix=output_suffix)
+    target.close()
+    command = [ffmpeg, "-y", "-ss", f"{start:.3f}", "-to", f"{end:.3f}", "-i", source_path]
+    if output_suffix == ".wav":
+        command += ["-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le"]
+    elif output_suffix == ".m4a":
+        command += ["-vn", "-c:a", "aac", "-b:a", "160k"]
+    else:
+        if video_mask and video_mask.get("enabled"):
+            try:
+                x = float(video_mask.get("x", 0))
+                y = float(video_mask.get("y", 0))
+                width = float(video_mask.get("width", 0))
+                height = float(video_mask.get("height", 0))
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(400, "遮挡区域参数无效") from exc
+            if width <= 0 or height <= 0 or min(x, y) < 0 or x + width > 100 or y + height > 100:
+                raise HTTPException(400, "遮挡区域必须位于视频画面内")
+            drawbox = (
+                f"drawbox=x=iw*{x / 100:.6f}:y=ih*{y / 100:.6f}:"
+                f"w=iw*{width / 100:.6f}:h=ih*{height / 100:.6f}:color=black@1:t=fill"
+            )
+            command += ["-vf", drawbox]
+        command += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-c:a", "aac", "-movflags", "+faststart"]
+    command.append(target.name)
+    result = subprocess.run(command, capture_output=True, text=True, timeout=3600, check=False)
+    if result.returncode != 0:
+        Path(target.name).unlink(missing_ok=True)
+        raise HTTPException(422, f"媒体区间提取失败：{result.stderr[-500:]}")
+    return target.name
+
+
+@app.post("/segment/range/{provider}")
+async def segment_range(
+    provider: str, media: Annotated[UploadFile, File()], start: Annotated[float, Form()], end: Annotated[float, Form()],
+    language: Annotated[str, Form()] = "auto", model: Annotated[ModelName, Form()] = "small",
+    request_id: Annotated[str, Form()] = "",
+) -> dict[str, object]:
+    if provider not in {"whisperx", "nvidia"}:
+        raise HTTPException(400, "区间解析仅支持自然语言或高级模型")
+    source_path = clip_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=Path(media.filename or "media.bin").suffix or ".bin") as target:
+            source_path = target.name
+            while chunk := await media.read(1024 * 1024):
+                target.write(chunk)
+        clip_path = await run_in_threadpool(_make_media_clip, source_path, start, end, ".wav")
+        payload = await run_in_threadpool(
+            transcribe_hybrid if provider == "nvidia" else transcribe_with_whisperx,
+            clip_path, language, model, request_id,
+        )
+        source_items = payload.get("cues") if provider == "nvidia" else payload.get("segments")
+        cues = []
+        for index, item in enumerate(source_items or [], start=1):
+            text = _subtitle_text(str(item.get("text", "")), str(payload.get("language") or language))
+            item_start, item_end = float(item["start"]), float(item["end"])
+            if text:
+                cues.append({"id": index, "start": round(item_start, 3), "end": round(max(item_end, item_start + 1), 3), "text": text})
+        return {**payload, "segments": [{"id": item["id"], "start": item["start"], "end": item["end"]} for item in cues], "cues": cues}
+    finally:
+        await media.close()
+        for path in (source_path, clip_path):
+            if path:
+                Path(path).unlink(missing_ok=True)
+        if request_id:
+            CANCELLED_JOBS.discard(request_id)
+
+
+@app.post("/publish/course")
+async def publish_course_gateway(
+    media: Annotated[UploadFile, File()], manifest: Annotated[str, Form()], visibility: Annotated[str, Form()],
+    clip_start: Annotated[float, Form()], clip_end: Annotated[float, Form()],
+    allowed_emails: Annotated[str, Form()] = "[]", expires_at: Annotated[str, Form()] = "",
+    video_mask: Annotated[str, Form()] = "{}",
+) -> dict[str, object]:
+    server = os.getenv("ECHOLOOP_PUBLISH_SERVER", "").strip().rstrip("/")
+    publish_key = os.getenv("ECHOLOOP_PUBLISH_KEY", "").strip()
+    if not server or not publish_key:
+        raise HTTPException(503, "尚未配置 ECHOLOOP_PUBLISH_SERVER 或 ECHOLOOP_PUBLISH_KEY")
+    source_path = clip_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=Path(media.filename or "media.bin").suffix or ".bin") as target:
+            source_path = target.name
+            while chunk := await media.read(1024 * 1024):
+                target.write(chunk)
+        is_audio = (media.content_type or "").startswith("audio/")
+        suffix, media_type = (".m4a", "audio/mp4") if is_audio else (".mp4", "video/mp4")
+        try:
+            mask = json.loads(video_mask)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, "遮挡区域参数无效") from exc
+        if not isinstance(mask, dict):
+            raise HTTPException(400, "遮挡区域参数无效")
+        clip_path = await run_in_threadpool(_make_media_clip, source_path, clip_start, clip_end, suffix, True, mask)
+        with open(clip_path, "rb") as clip:
+            response = await run_in_threadpool(lambda: requests.post(
+                f"{server}/api/publications", headers={"X-EchoLoop-Publish-Key": publish_key},
+                data={"manifest": manifest, "visibility": visibility, "allowed_emails": allowed_emails, "expires_at": expires_at},
+                files={"media": (f"clip{suffix}", clip, media_type)}, timeout=3600,
+            ))
+        body = response.json() if response.headers.get("content-type", "").startswith("application/json") else {"detail": response.text[:500]}
+        if not response.ok:
+            raise HTTPException(response.status_code, body.get("detail", "发布服务器拒绝了请求"))
+        return body
+    finally:
+        for path in (source_path, clip_path):
+            if path:
+                Path(path).unlink(missing_ok=True)
+
+
+@app.post("/publish/course/{course_id}/unpublish")
+async def unpublish_course_gateway(course_id: str) -> dict[str, object]:
+    server = os.getenv("ECHOLOOP_PUBLISH_SERVER", "").strip().rstrip("/")
+    publish_key = os.getenv("ECHOLOOP_PUBLISH_KEY", "").strip()
+    if not server or not publish_key:
+        raise HTTPException(503, "尚未配置 ECHOLOOP_PUBLISH_SERVER 或 ECHOLOOP_PUBLISH_KEY")
+    response = await run_in_threadpool(lambda: requests.post(
+        f"{server}/api/publications/{course_id}/unpublish",
+        headers={"X-EchoLoop-Publish-Key": publish_key}, timeout=30,
+    ))
+    body = response.json() if response.headers.get("content-type", "").startswith("application/json") else {"detail": response.text[:500]}
+    if not response.ok:
+        raise HTTPException(response.status_code, body.get("detail", "学习服务器拒绝了下架请求"))
+    return body
+
+
+@app.delete("/publish/course/{course_id}")
+async def delete_published_course_gateway(course_id: str) -> dict[str, object]:
+    server = os.getenv("ECHOLOOP_PUBLISH_SERVER", "").strip().rstrip("/")
+    publish_key = os.getenv("ECHOLOOP_PUBLISH_KEY", "").strip()
+    if not server or not publish_key:
+        raise HTTPException(503, "尚未配置 ECHOLOOP_PUBLISH_SERVER 或 ECHOLOOP_PUBLISH_KEY")
+    response = await run_in_threadpool(lambda: requests.delete(
+        f"{server}/api/publications/{course_id}",
+        headers={"X-EchoLoop-Publish-Key": publish_key}, timeout=30,
+    ))
+    body = response.json() if response.headers.get("content-type", "").startswith("application/json") else {"detail": response.text[:500]}
+    if not response.ok:
+        raise HTTPException(response.status_code, body.get("detail", "学习服务器拒绝了删除请求"))
+    return body

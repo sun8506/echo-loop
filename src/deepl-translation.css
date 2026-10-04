@@ -1,0 +1,38 @@
+.material-translate-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+  margin-top: 8px;
+}
+
+.material-translate-actions button,
+.material-translate-one {
+  border: 1px solid #cbd9d0;
+  border-radius: 8px;
+  background: #edf4ef;
+  color: #17614f;
+  padding: 8px;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.material-translate-actions button:disabled,
+.material-translate-one:disabled {
+  opacity: .5;
+  cursor: wait;
+}
+
+.material-translation-error {
+  margin: 8px 0 !important;
+  border-radius: 8px;
+  background: #fff0ed;
+  padding: 8px;
+  color: #a6423b !important;
+  line-height: 1.5;
+}
+
+.material-quality-grid > main > label .material-translate-one {
+  width: max-content;
+  margin-top: 5px;
+}

@@ -5,7 +5,7 @@
 ## 功能
 
 - 导入本地音频或视频并完整播放
-- 输入 TBS NewsDig 正文或 YouTube 单视频 URL，将视频临时下载后接入现有解析、精听和学习库流程
+- 输入 TBS NewsDig 正文、YouTube 或 Bilibili 单视频 URL，将视频临时下载后接入现有解析、精听和学习库流程
 - 使用 Web Audio API 读取真实音轨并绘制完整波形
 - 根据静音停顿自动切分音频（不使用 AI）
 - 单片段循环、连续多片段循环与变速播放
@@ -13,11 +13,51 @@
 - Shadowing 跟读录音和回放
 - 使用 IndexedDB 自动保存媒体、波形、片段、字幕和当前学习位置
 - 页面重新打开时自动恢复最近一次学习项目
+- 提供手机优先的学习端：字幕跟随、单句循环、倍速、前后句切换和本地进度保存
+
+## 学习端
+
+制作端顶部的“学习端预览”会打开当前本地项目：
+
+```text
+/learn/local?project=<本地项目ID>
+```
+
+正式发布后的课程入口约定为 `/learn/<courseId>`，页面会读取：
+
+```http
+GET /api/courses/<courseId>
+```
+
+接口返回的数据结构定义在 `src/course.ts`。当前分支先实现学习端和本地预览；课程发布及服务器端课程接口将在后续阶段接入。
+
+学习端现已支持注册登录，并由服务器保存每位用户的课程进度、已完成字幕、收藏、有效播放时间和反馈。默认使用 `backend/data/echoloop.db`，也可通过 `ECHOLOOP_DB_PATH` 指定数据库路径。数据库文件属于运行数据，不应提交到 Git。
+
+## 离线课程包与 Android App
+
+制作端点击“导出课程”会生成 `.echoloop` 文件，其中包含原媒体、字幕、片段和版本化课程清单。学习端进入 `/learn` 后可导入课程包；导入内容保存在设备本地，后续播放不消耗课程发布服务器的媒体流量。
+
+Android 学习端基于 Capacitor。构建命令：
+
+```bash
+npm run app:build:android
+```
+
+Windows 下可以直接双击项目根目录的 `build-learner-app.cmd`。脚本只在执行时构建学习端 APP，并在成功后通过资源管理器定位 APK。
+
+Debug APK 输出到 `android/app/build/outputs/apk/debug/app-debug.apk`。Android App 默认进入学习端主入口，支持注册登录以及不登录的离线学习；登录后可同步服务器学习记录和发送反馈。
+
+需要让 Android App 连接线上账户服务器时，在构建前配置：
+
+```bash
+export VITE_LEARNER_API_BASE="https://your-domain.example/api"
+npm run app:build:android
+```
 
 当前版本的波形和静音切分完全在浏览器处理。原文生成可选择本机 `faster-whisper` 的 `tiny`、`base` 或 `small` 模型；媒体只提交到本机服务，临时文件在处理完成后立即删除。
 
 TBS NewsDig 导入需要在启动 EchoLoop 的终端中设置 `ECHOLOOP_TBS_STREAKS_API_KEY`。
-密钥只通过环境变量读取，不要写入代码或提交到 Git。YouTube 导入不需要配置该密钥。
+密钥只通过环境变量读取，不要写入代码或提交到 Git。YouTube 与 Bilibili 导入不需要配置该密钥；支持 Bilibili 视频页及 `b23.tv` 短链接。
 
 也可以在导入前选择 `NVIDIA 云端 · Large V3`，由 NVIDIA 托管的 Whisper Large V3
 生成原文和自然语句片段。先在 NVIDIA API Catalog 创建 API Key，然后在启动 EchoLoop
@@ -76,7 +116,7 @@ cd backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn main:app --host 127.0.0.1 --port 8000
+uvicorn main:app --host 127.0.0.1 --port 43180
 ```
 
 首次点击“解析选中片段”会下载所选模型，建议先使用默认的 `tiny`。每次必须选择 1–5 个连续片段。浏览器会先从已解码音轨生成选区 WAV，只把这段小文件交给 Whisper，不上传或解码完整媒体；特殊格式无法在浏览器解码时才使用兼容模式。

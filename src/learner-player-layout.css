@@ -1,0 +1,62 @@
+/* Keep every learning block in normal flow. Android WebView may otherwise
+   composite the video surface independently and let following cards overlap it. */
+.learner-player-card {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: stretch !important;
+  isolation: isolate;
+}
+
+.learner-player-card .learner-media {
+  position: relative !important;
+  z-index: 0 !important;
+  flex: 0 0 360px !important;
+  width: 100% !important;
+  height: 360px !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  overflow: hidden !important;
+  background: #111916;
+}
+
+.learner-player-card .learner-media video {
+  position: absolute !important;
+  inset: 0 !important;
+  display: block !important;
+  width: 100% !important;
+  height: 100% !important;
+  max-width: 100% !important;
+  max-height: 100% !important;
+  object-fit: contain !important;
+  background: #111916;
+}
+
+.learner-player-card .learner-timeline,
+.learner-player-card .learner-controls,
+.learner-player-card .learner-tools,
+.learner-player-card .learner-current-caption {
+  position: relative !important;
+  inset: auto !important;
+  z-index: 2 !important;
+  flex: 0 0 auto !important;
+  transform: none !important;
+  background-color: #fbfaf7;
+}
+
+.learner-player-card .learner-current-caption {
+  background-color: #f8fbf8;
+}
+
+@media (max-width: 760px) {
+  .learner-player-card .learner-media {
+    flex-basis: 225px !important;
+    height: 225px !important;
+  }
+}
+
+@media (max-width: 380px) {
+  .learner-player-card .learner-media {
+    flex-basis: 205px !important;
+    height: 205px !important;
+  }
+}

@@ -1,4 +1,5 @@
 node_modules/
+.idea/
 dist/
 .env
 .env.*
@@ -12,6 +13,7 @@ src-tauri/binaries/
 backend/build/
 backend/dist/
 backend/*.spec
+backend/data/*.db*
 
 :memory:.ses
 *.log

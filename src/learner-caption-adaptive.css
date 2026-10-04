@@ -1,0 +1,19 @@
+.learner-current-caption .learner-token-line,
+.learner-current-caption.expanded .learner-token-line {
+  max-height: none !important;
+  overflow: visible !important;
+}
+
+.learner-current-caption {
+  overflow: visible !important;
+}
+
+.learner-caption-heading {
+  flex-wrap: wrap;
+}
+
+@media (max-width: 760px) {
+  .learner-current-caption .learner-token-line {
+    line-height: 1.75;
+  }
+}

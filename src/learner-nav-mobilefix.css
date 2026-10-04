@@ -1,0 +1,35 @@
+.learner-shell,
+.course-import-page,
+.vocabulary-page {
+  padding-bottom: calc(76px + env(safe-area-inset-bottom, 0px));
+}
+
+.learner-app-nav {
+  position: fixed !important;
+  z-index: 2147483000 !important;
+  left: 50% !important;
+  right: auto !important;
+  bottom: 0 !important;
+  transform: translateX(-50%) !important;
+  display: grid !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  width: min(860px, 100%) !important;
+  height: calc(62px + env(safe-area-inset-bottom, 0px)) !important;
+  padding: 0 0 env(safe-area-inset-bottom, 0px) !important;
+  box-sizing: border-box !important;
+  background: #fbfaf7 !important;
+  box-shadow: 0 -8px 28px rgba(28, 48, 39, .12);
+}
+
+@media (max-width: 760px) {
+  .learner-shell,
+  .course-import-page,
+  .vocabulary-page {
+    padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .learner-app-nav {
+    height: calc(58px + env(safe-area-inset-bottom, 0px)) !important;
+  }
+}
