@@ -1143,3 +1143,35 @@ async def publish_course_gateway(
         for path in (source_path, clip_path):
             if path:
                 Path(path).unlink(missing_ok=True)
+
+
+@app.post("/publish/course/{course_id}/unpublish")
+async def unpublish_course_gateway(course_id: str) -> dict[str, object]:
+    server = os.getenv("ECHOLOOP_PUBLISH_SERVER", "").strip().rstrip("/")
+    publish_key = os.getenv("ECHOLOOP_PUBLISH_KEY", "").strip()
+    if not server or not publish_key:
+        raise HTTPException(503, "尚未配置 ECHOLOOP_PUBLISH_SERVER 或 ECHOLOOP_PUBLISH_KEY")
+    response = await run_in_threadpool(lambda: requests.post(
+        f"{server}/api/publications/{course_id}/unpublish",
+        headers={"X-EchoLoop-Publish-Key": publish_key}, timeout=30,
+    ))
+    body = response.json() if response.headers.get("content-type", "").startswith("application/json") else {"detail": response.text[:500]}
+    if not response.ok:
+        raise HTTPException(response.status_code, body.get("detail", "学习服务器拒绝了下架请求"))
+    return body
+
+
+@app.delete("/publish/course/{course_id}")
+async def delete_published_course_gateway(course_id: str) -> dict[str, object]:
+    server = os.getenv("ECHOLOOP_PUBLISH_SERVER", "").strip().rstrip("/")
+    publish_key = os.getenv("ECHOLOOP_PUBLISH_KEY", "").strip()
+    if not server or not publish_key:
+        raise HTTPException(503, "尚未配置 ECHOLOOP_PUBLISH_SERVER 或 ECHOLOOP_PUBLISH_KEY")
+    response = await run_in_threadpool(lambda: requests.delete(
+        f"{server}/api/publications/{course_id}",
+        headers={"X-EchoLoop-Publish-Key": publish_key}, timeout=30,
+    ))
+    body = response.json() if response.headers.get("content-type", "").startswith("application/json") else {"detail": response.text[:500]}
+    if not response.ok:
+        raise HTTPException(response.status_code, body.get("detail", "学习服务器拒绝了删除请求"))
+    return body

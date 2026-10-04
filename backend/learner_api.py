@@ -82,6 +82,9 @@ def _connect() -> sqlite3.Connection:
         );
         """
     )
+    publication_columns = {row["name"] for row in connection.execute("PRAGMA table_info(published_courses)")}
+    if "status" not in publication_columns:
+        connection.execute("ALTER TABLE published_courses ADD COLUMN status TEXT NOT NULL DEFAULT 'published'")
     return connection
 
 
@@ -342,10 +345,10 @@ async def publish_course(
     course.update({"id": course_id, "mediaUrl": f"/api/course-media/{course_id}", "mediaType": media.content_type or "video/mp4"})
     with _connect() as connection:
         connection.execute(
-            """INSERT INTO published_courses(id,title,manifest,visibility,allowed_emails,expires_at,media_path,media_type,created_at,updated_at)
-               VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,manifest=excluded.manifest,
+            """INSERT INTO published_courses(id,title,manifest,visibility,allowed_emails,expires_at,media_path,media_type,created_at,updated_at,status)
+               VALUES(?,?,?,?,?,?,?,?,?,?,'published') ON CONFLICT(id) DO UPDATE SET title=excluded.title,manifest=excluded.manifest,
                visibility=excluded.visibility,allowed_emails=excluded.allowed_emails,expires_at=excluded.expires_at,
-               media_path=excluded.media_path,media_type=excluded.media_type,updated_at=excluded.updated_at""",
+               media_path=excluded.media_path,media_type=excluded.media_type,updated_at=excluded.updated_at,status='published'""",
             (course_id, str(course.get("title", course_id)), json.dumps(course, ensure_ascii=False), visibility,
              json.dumps(emails), expiry, str(media_path), course["mediaType"], now, now),
         )
@@ -355,7 +358,7 @@ async def publish_course(
 def _accessible_course(course_id: str, authorization: str | None) -> sqlite3.Row:
     with _connect() as connection:
         row = connection.execute("SELECT * FROM published_courses WHERE id=?", (course_id,)).fetchone()
-    if not row or (row["expires_at"] and row["expires_at"] <= int(time.time())):
+    if not row or row["status"] != "published" or (row["expires_at"] and row["expires_at"] <= int(time.time())):
         raise HTTPException(404, "素材不存在或已经到期")
     if row["visibility"] == "global":
         return row
@@ -377,7 +380,7 @@ def list_courses(authorization: Annotated[str | None, Header()] = None) -> dict[
     now = int(time.time())
     with _connect() as connection:
         rows = connection.execute(
-            "SELECT * FROM published_courses WHERE expires_at IS NULL OR expires_at>? ORDER BY updated_at DESC",
+            "SELECT * FROM published_courses WHERE status='published' AND (expires_at IS NULL OR expires_at>?) ORDER BY updated_at DESC",
             (now,),
         ).fetchall()
     courses: list[dict[str, object]] = []
@@ -397,6 +400,47 @@ def list_courses(authorization: Annotated[str | None, Header()] = None) -> dict[
             "expiresAt": row["expires_at"], "updatedAt": row["updated_at"],
         })
     return {"courses": courses}
+
+
+@router.post("/publications/{course_id}/unpublish")
+def unpublish_course(
+    course_id: str,
+    publish_key: Annotated[str | None, Header(alias="X-EchoLoop-Publish-Key")] = None,
+) -> dict[str, object]:
+    expected = os.getenv("ECHOLOOP_PUBLISH_KEY", "").strip()
+    if not expected or not publish_key or not hmac.compare_digest(expected, publish_key):
+        raise HTTPException(403, "发布凭证无效")
+    with _connect() as connection:
+        cursor = connection.execute(
+            "UPDATE published_courses SET status='unpublished',updated_at=? WHERE id=?",
+            (int(time.time()), course_id),
+        )
+    if cursor.rowcount == 0:
+        raise HTTPException(404, "发布内容不存在")
+    return {"id": course_id, "status": "unpublished"}
+
+
+@router.delete("/publications/{course_id}")
+def delete_publication(
+    course_id: str,
+    publish_key: Annotated[str | None, Header(alias="X-EchoLoop-Publish-Key")] = None,
+) -> dict[str, object]:
+    expected = os.getenv("ECHOLOOP_PUBLISH_KEY", "").strip()
+    if not expected or not publish_key or not hmac.compare_digest(expected, publish_key):
+        raise HTTPException(403, "发布凭证无效")
+    with _connect() as connection:
+        row = connection.execute("SELECT media_path FROM published_courses WHERE id=?", (course_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "发布内容不存在")
+        connection.execute("DELETE FROM published_courses WHERE id=?", (course_id,))
+    media_path = Path(row["media_path"])
+    publication_root = _publication_dir().resolve()
+    try:
+        if media_path.resolve().is_relative_to(publication_root):
+            media_path.unlink(missing_ok=True)
+    except (OSError, RuntimeError):
+        pass
+    return {"id": course_id, "status": "deleted"}
 
 
 @router.get("/courses/{course_id}")
