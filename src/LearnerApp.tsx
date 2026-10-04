@@ -41,6 +41,7 @@ async function loadCourse(): Promise<{ course: LearningCourse; revoke?: () => vo
   const parts = url.pathname.split('/').filter(Boolean)
   const courseId = decodeURIComponent(parts[1] || '')
   const nativeOfflineId = url.searchParams.get('offline')
+  const nativeCourseId = url.searchParams.get('course')
   if (nativeOfflineId) {
     const stored = await getOfflineCourse(nativeOfflineId)
     if (!stored) throw new Error('本机素材不存在，请重新导入学习包。')
@@ -58,25 +59,34 @@ async function loadCourse(): Promise<{ course: LearningCourse; revoke?: () => vo
     const projectId = url.searchParams.get('project') || ''
     const project = await getProject(projectId)
     if (!project) throw new Error('本地素材不存在，请返回制作端重新打开项目。')
+    const requestedAnalysis = url.searchParams.get('analysis')
+    const analysis = requestedAnalysis ? project.analyses?.find(item => item.id === requestedAnalysis && item.status === 'ready') : undefined
     const mediaUrl = URL.createObjectURL(project.media)
     return {
       course: {
-        id: `local:${project.id}`,
-        title: project.fileName.replace(/\.[^.]+$/, ''),
+        id: 'local:'+project.id+':'+(analysis?.id||'current'),
+        title: analysis ? project.fileName.replace(/\.[^.]+$/, '')+' · '+analysis.name : project.fileName.replace(/\.[^.]+$/, ''),
         description: '本地素材预览',
-        language: project.detectedLanguage,
+        language: analysis?.detectedLanguage || project.detectedLanguage,
         mediaUrl,
         mediaType: project.fileType,
         duration: project.duration,
-        cues: project.cues,
+        cues: analysis?.cues?.length ? analysis.cues : project.cues,
       },
       revoke: () => URL.revokeObjectURL(mediaUrl),
     }
   }
-  if (!courseId) throw new Error('素材地址无效。')
-  const response = await fetch(learnerApiUrl(`/courses/${encodeURIComponent(courseId)}`))
-  if (!response.ok) throw new Error(response.status === 404 ? '素材不存在或已经下架。' : '暂时无法取得素材，请稍后再试。')
-  return { course: await response.json() as LearningCourse }
+  const publishedCourseId = nativeCourseId || courseId
+  if (!publishedCourseId) throw new Error('素材地址无效。')
+  const token = localStorage.getItem(TOKEN_KEY) || ''
+  const headers = token ? { Authorization: `Bearer ${token}` } : undefined
+  const response = await fetch(learnerApiUrl(`/courses/${encodeURIComponent(publishedCourseId)}`), { headers })
+  if (!response.ok) throw new Error(response.status === 404 ? '素材不存在或已经下架。' : response.status === 403 ? '你没有该素材的使用权限。' : '暂时无法取得素材，请稍后再试。')
+  const course = await response.json() as LearningCourse
+  const mediaResponse = await fetch(course.mediaUrl, { headers })
+  if (!mediaResponse.ok) throw new Error('媒体片段加载失败。')
+  const mediaUrl = URL.createObjectURL(await mediaResponse.blob())
+  return { course: { ...course, mediaUrl }, revoke: () => URL.revokeObjectURL(mediaUrl) }
 }
 
 export default function LearnerApp() {
@@ -122,7 +132,7 @@ export default function LearnerApp() {
       revoke = result.revoke
       const progress = readProgress(result.course.id)
       setCourse(result.course)
-      setPosition(Math.min(progress.position, result.course.duration || progress.position))
+      setPosition(progress.updatedAt ? Math.min(progress.position, result.course.duration || progress.position) : (result.course.cues[0]?.start || 0))
       setSpeed(progress.speed)
       setCompleted(progress.completedCueIds)
       setBookmarked(progress.bookmarkedCueIds || [])

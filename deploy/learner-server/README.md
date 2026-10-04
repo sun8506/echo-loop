@@ -62,3 +62,7 @@ sudo -u echoloop sqlite3 /var/lib/echoloop/learner.db ".backup '/var/lib/echoloo
 ```
 
 至少每日将备份文件复制到另一块磁盘或对象存储，并定期验证恢复。
+
+## 轻量发布
+
+制作端仅向服务器上传当前发布区间的媒体片段、相对时间轴字幕和权限元数据，不上传完整原素材。服务器环境配置 `ECHOLOOP_PUBLICATION_DIR` 与 `ECHOLOOP_PUBLISH_KEY`；本地制作端配置同一把 `ECHOLOOP_PUBLISH_KEY` 和 `ECHOLOOP_PUBLISH_SERVER=https://api.example.com`。发布目录必须位于 systemd 的 `ReadWritePaths` 中，示例已使用 `/var/lib/echoloop/publications`。

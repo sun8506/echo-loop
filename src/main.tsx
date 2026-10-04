@@ -22,10 +22,11 @@ import './material-quality.css'
 import './deepl-translation.css'
 import './learner-player-layout.css'
 import './learner-caption-adaptive.css'
+import './video-mask.css'
 
 const learnerRoute = isNativeApp || window.location.pathname === '/learn' || window.location.pathname.startsWith('/learn/')
 const learnerPortalRoute = isNativeApp
-  ? !new URL(window.location.href).searchParams.has('offline')
+  ? !new URL(window.location.href).searchParams.has('offline') && !new URL(window.location.href).searchParams.has('course')
   : /^\/learn(?:\/(?:courses|materials|vocabulary|profile))?\/?$/.test(window.location.pathname)
 
 ReactDOM.createRoot(document.getElementById('root')!).render(

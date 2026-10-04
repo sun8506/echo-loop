@@ -12,7 +12,8 @@ import uuid
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 router = APIRouter(tags=["learner"])
@@ -73,6 +74,11 @@ def _connect() -> sqlite3.Connection:
             position REAL NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL,
             status TEXT NOT NULL DEFAULT 'new'
+        );
+        CREATE TABLE IF NOT EXISTS published_courses (
+            id TEXT PRIMARY KEY, title TEXT NOT NULL, manifest TEXT NOT NULL, visibility TEXT NOT NULL,
+            allowed_emails TEXT NOT NULL DEFAULT '[]', expires_at INTEGER, media_path TEXT NOT NULL,
+            media_type TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
         );
         """
     )
@@ -288,3 +294,123 @@ def create_feedback(payload: FeedbackRequest, user: Annotated[dict[str, object],
             (feedback_id, user["id"], payload.courseId, category, message, max(0, payload.position), int(time.time())),
         )
     return {"id": feedback_id, "status": "received"}
+
+
+def _publication_dir() -> Path:
+    configured = os.getenv("ECHOLOOP_PUBLICATION_DIR", "").strip()
+    path = Path(configured) if configured else _database_path().parent / "publications"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _optional_user(authorization: str | None) -> dict[str, object] | None:
+    if not authorization:
+        return None
+    try:
+        return current_user(authorization)
+    except HTTPException:
+        return None
+
+
+@router.post("/publications")
+async def publish_course(
+    manifest: Annotated[str, Form()], visibility: Annotated[str, Form()],
+    media: Annotated[UploadFile, File()], allowed_emails: Annotated[str, Form()] = "[]",
+    expires_at: Annotated[str, Form()] = "",
+    publish_key: Annotated[str | None, Header(alias="X-EchoLoop-Publish-Key")] = None,
+) -> dict[str, object]:
+    expected = os.getenv("ECHOLOOP_PUBLISH_KEY", "").strip()
+    if not expected or not publish_key or not hmac.compare_digest(expected, publish_key):
+        raise HTTPException(403, "发布凭证无效")
+    if visibility not in {"private", "global", "selected"}:
+        raise HTTPException(400, "发布范围无效")
+    try:
+        course = json.loads(manifest)
+        emails = sorted({str(item).strip().lower() for item in json.loads(allowed_emails) if str(item).strip()})
+        expiry = int(expires_at) if expires_at else None
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(400, "发布数据格式无效") from exc
+    if visibility == "selected" and not emails:
+        raise HTTPException(400, "指定用户发布至少需要一个邮箱")
+    course_id = re.sub(r"[^a-zA-Z0-9_-]", "", str(course.get("id", ""))) or uuid.uuid4().hex
+    suffix = Path(media.filename or "clip.mp4").suffix.lower() or ".mp4"
+    media_path = _publication_dir() / f"{course_id}{suffix}"
+    with media_path.open("wb") as target:
+        while chunk := await media.read(1024 * 1024):
+            target.write(chunk)
+    now = int(time.time())
+    course.update({"id": course_id, "mediaUrl": f"/api/course-media/{course_id}", "mediaType": media.content_type or "video/mp4"})
+    with _connect() as connection:
+        connection.execute(
+            """INSERT INTO published_courses(id,title,manifest,visibility,allowed_emails,expires_at,media_path,media_type,created_at,updated_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,manifest=excluded.manifest,
+               visibility=excluded.visibility,allowed_emails=excluded.allowed_emails,expires_at=excluded.expires_at,
+               media_path=excluded.media_path,media_type=excluded.media_type,updated_at=excluded.updated_at""",
+            (course_id, str(course.get("title", course_id)), json.dumps(course, ensure_ascii=False), visibility,
+             json.dumps(emails), expiry, str(media_path), course["mediaType"], now, now),
+        )
+    return {"id": course_id, "status": "published", "visibility": visibility, "expiresAt": expiry}
+
+
+def _accessible_course(course_id: str, authorization: str | None) -> sqlite3.Row:
+    with _connect() as connection:
+        row = connection.execute("SELECT * FROM published_courses WHERE id=?", (course_id,)).fetchone()
+    if not row or (row["expires_at"] and row["expires_at"] <= int(time.time())):
+        raise HTTPException(404, "素材不存在或已经到期")
+    if row["visibility"] == "global":
+        return row
+    if row["visibility"] == "private":
+        raise HTTPException(404, "素材为私有暂存状态")
+    user = _optional_user(authorization)
+    if not user:
+        raise HTTPException(401, "该素材需要登录")
+    if row["visibility"] == "selected" and str(user["email"]).lower() not in json.loads(row["allowed_emails"]):
+        raise HTTPException(403, "你没有该素材的使用权限")
+    return row
+
+
+@router.get("/courses")
+def list_courses(authorization: Annotated[str | None, Header()] = None) -> dict[str, object]:
+    """Return active publications the current learner may open."""
+    user = _optional_user(authorization)
+    email = str(user["email"]).lower() if user else ""
+    now = int(time.time())
+    with _connect() as connection:
+        rows = connection.execute(
+            "SELECT * FROM published_courses WHERE expires_at IS NULL OR expires_at>? ORDER BY updated_at DESC",
+            (now,),
+        ).fetchall()
+    courses: list[dict[str, object]] = []
+    for row in rows:
+        if row["visibility"] == "private":
+            continue
+        if row["visibility"] == "selected" and email not in json.loads(row["allowed_emails"]):
+            continue
+        try:
+            manifest = json.loads(row["manifest"])
+        except (TypeError, ValueError):
+            continue
+        courses.append({
+            "id": row["id"], "title": row["title"], "description": manifest.get("description", ""),
+            "language": manifest.get("language", ""), "duration": manifest.get("duration", 0),
+            "cueCount": len(manifest.get("cues", [])), "visibility": row["visibility"],
+            "expiresAt": row["expires_at"], "updatedAt": row["updated_at"],
+        })
+    return {"courses": courses}
+
+
+@router.get("/courses/{course_id}")
+def get_course(course_id: str, request: Request, authorization: Annotated[str | None, Header()] = None) -> dict[str, object]:
+    row = _accessible_course(course_id, authorization)
+    course = json.loads(row["manifest"])
+    course["mediaUrl"] = str(request.base_url).rstrip("/") + f"/course-media/{course_id}"
+    return course
+
+
+@router.get("/course-media/{course_id}")
+def get_course_media(course_id: str, authorization: Annotated[str | None, Header()] = None):
+    row = _accessible_course(course_id, authorization)
+    path = Path(row["media_path"])
+    if not path.is_file():
+        raise HTTPException(404, "媒体片段不存在")
+    return FileResponse(path, media_type=row["media_type"], filename=path.name)

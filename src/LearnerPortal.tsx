@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { BookOpen, Clock3, Import, LogOut, Play } from 'lucide-react'
 import CourseImport from './CourseImport'
 import LearnerAuth from './LearnerAuth'
-import { getMe, getStats, logout, TOKEN_KEY, type LearnerUser, type LearningStats } from './learnerApi'
+import { getAvailableCourses, getMe, getStats, logout, TOKEN_KEY, type LearnerUser, type LearningStats, type PublishedCourseSummary } from './learnerApi'
 import { listOfflineCourses } from './learnerStorage'
 import type { ImportedCoursePackage } from './coursePackage'
 import { isNativeApp } from './runtime'
@@ -22,15 +22,21 @@ function openLibrary() {
   window.location.href = isNativeApp ? '/?screen=courses' : '/learn/courses'
 }
 
+function openPublishedCourse(id: string) {
+  window.location.href = isNativeApp ? `/?course=${encodeURIComponent(id)}` : `/learn/${encodeURIComponent(id)}`
+}
+
 export default function LearnerPortal() {
   const [checking, setChecking] = useState(true)
   const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY) || '')
   const [user, setUser] = useState<LearnerUser | null>(null)
   const [courses, setCourses] = useState<ImportedCoursePackage[]>([])
   const [stats, setStats] = useState<LearningStats | null>(null)
+  const [published, setPublished] = useState<PublishedCourseSummary[]>([])
 
   useEffect(() => {
     void listOfflineCourses().then(setCourses)
+    void getAvailableCourses(token).then(result => setPublished(result.courses)).catch(() => setPublished([]))
     if (!token) {
       setChecking(false)
       return
@@ -60,6 +66,7 @@ export default function LearnerPortal() {
       <div className="learner-portal-intro"><small>今日学习</small><h1>{recent ? '继续上次的学习' : '从一份素材开始学习'}</h1><p>{recent ? recent.course.title : '导入 EchoLoop 学习包，素材和进度都会保存在当前设备。'}</p>{recent ? <button onClick={() => openCourse(recent.course.id)}><Play/>继续学习</button> : <button onClick={openLibrary}><Import/>导入素材</button>}</div>
       <div className="learner-portal-summary"><div><Clock3/><span><b>{Math.round((stats?.totalSeconds || 0) / 60)}</b> 分钟</span><small>累计学习</small></div><div><BookOpen/><span><b>{courses.length}</b> 个</span><small>本机素材</small></div></div>
       {courses.length > 0 && <section className="learner-portal-courses"><div><h2>最近学习</h2><button onClick={openLibrary}>全部素材</button></div>{courses.slice(0, 3).map(item => <button key={item.course.id} onClick={() => openCourse(item.course.id)}><span><b>{item.course.title}</b><small>{Math.round(item.course.duration / 60)} 分钟 · {item.course.cues.length} 句</small></span><Play/></button>)}</section>}
+      <section className="learner-portal-courses"><div><h2>当前可阅览</h2><button onClick={openLibrary}>查看全部</button></div>{published.length ? published.slice(0, 5).map(item => <button key={item.id} onClick={() => openPublishedCourse(item.id)}><span><b>{item.title}</b><small>{item.language || '语言学习'} · {Math.round(item.duration / 60)} 分钟 · {item.cueCount} 句{item.visibility === 'selected' ? ' · 专属内容' : ''}</small></span><Play/></button>) : <p className="learner-course-empty">暂时没有已发布且对你开放的内容</p>}</section>
     </section>
     <LearnerBottomNav active="study"/>
   </main>

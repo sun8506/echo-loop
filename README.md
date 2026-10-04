@@ -5,7 +5,7 @@
 ## 功能
 
 - 导入本地音频或视频并完整播放
-- 输入 TBS NewsDig 正文或 YouTube 单视频 URL，将视频临时下载后接入现有解析、精听和学习库流程
+- 输入 TBS NewsDig 正文、YouTube 或 Bilibili 单视频 URL，将视频临时下载后接入现有解析、精听和学习库流程
 - 使用 Web Audio API 读取真实音轨并绘制完整波形
 - 根据静音停顿自动切分音频（不使用 AI）
 - 单片段循环、连续多片段循环与变速播放
@@ -57,7 +57,7 @@ npm run app:build:android
 当前版本的波形和静音切分完全在浏览器处理。原文生成可选择本机 `faster-whisper` 的 `tiny`、`base` 或 `small` 模型；媒体只提交到本机服务，临时文件在处理完成后立即删除。
 
 TBS NewsDig 导入需要在启动 EchoLoop 的终端中设置 `ECHOLOOP_TBS_STREAKS_API_KEY`。
-密钥只通过环境变量读取，不要写入代码或提交到 Git。YouTube 导入不需要配置该密钥。
+密钥只通过环境变量读取，不要写入代码或提交到 Git。YouTube 与 Bilibili 导入不需要配置该密钥；支持 Bilibili 视频页及 `b23.tv` 短链接。
 
 也可以在导入前选择 `NVIDIA 云端 · Large V3`，由 NVIDIA 托管的 Whisper Large V3
 生成原文和自然语句片段。先在 NVIDIA API Catalog 创建 API Key，然后在启动 EchoLoop
@@ -116,7 +116,7 @@ cd backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn main:app --host 127.0.0.1 --port 8000
+uvicorn main:app --host 127.0.0.1 --port 43180
 ```
 
 首次点击“解析选中片段”会下载所选模型，建议先使用默认的 `tiny`。每次必须选择 1–5 个连续片段。浏览器会先从已解码音轨生成选区 WAV，只把这段小文件交给 Whisper，不上传或解码完整媒体；特殊格式无法在浏览器解码时才使用兼容模式。

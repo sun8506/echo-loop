@@ -10,6 +10,7 @@ export type ServerProgress = {
   totalSeconds: number
 }
 export type LearningStats = { totalSeconds: number; courseCount: number; completedCueCount: number }
+export type PublishedCourseSummary = { id: string; title: string; description?: string; language?: string; duration: number; cueCount: number; visibility: 'global' | 'selected'; expiresAt?: number | null; updatedAt: number }
 
 const configuredApiBase = String(import.meta.env.VITE_LEARNER_API_BASE || '').replace(/\/$/, '')
 const API_BASE = configuredApiBase || (isNativeApp ? '' : '/api')
@@ -60,6 +61,10 @@ export async function saveProgress(token: string, courseId: string, progress: Om
 
 export async function getStats(token: string) {
   return request<LearningStats>('/learning/stats', {}, token)
+}
+
+export async function getAvailableCourses(token = '') {
+  return request<{ courses: PublishedCourseSummary[] }>('/courses', {}, token)
 }
 
 export async function sendFeedback(token: string, payload: { courseId: string; category: string; message: string; position: number }) {

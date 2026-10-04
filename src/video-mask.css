@@ -1,0 +1,8 @@
+.video-mask-fields{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-top:10px;padding:10px 12px;border:1px solid #d9ddd8;border-radius:10px;background:#f7f8f5}
+.video-mask-fields label{display:flex;align-items:center;gap:5px;font-size:12px;color:#46524c}
+.video-mask-fields>label:first-child{font-weight:700;margin-right:3px}
+.video-mask-fields input[type="number"]{width:58px;padding:6px;border:1px solid #d3d8d3;border-radius:7px;background:#fff}
+.video-mask-fields button{border:1px solid #cad4ce;border-radius:8px;background:#fff;color:#17614f;padding:6px 9px;cursor:pointer}
+.video-mask-preview{position:absolute;z-index:2;background:#111;opacity:.9;border:2px dashed #e85d4a;pointer-events:none;box-sizing:border-box}
+.media-stage .timecode{z-index:3}
+@media(max-width:720px){.video-mask-fields{align-items:flex-start}.video-mask-fields label:not(:first-child){width:calc(50% - 5px);justify-content:space-between}.video-mask-fields input[type="number"]{width:64px}}

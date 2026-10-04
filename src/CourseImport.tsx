@@ -4,10 +4,14 @@ import { importCoursePackage } from './coursePackage'
 import { listOfflineCourses, saveOfflineCourse } from './learnerStorage'
 import type { ImportedCoursePackage } from './coursePackage'
 import { isNativeApp } from './runtime'
+import { getAvailableCourses, TOKEN_KEY, type PublishedCourseSummary } from './learnerApi'
 
 const formatSize = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(bytes > 100 * 1024 * 1024 ? 0 : 1)} MB`
 const openCourse = (id: string) => {
   window.location.href = isNativeApp ? `/?offline=${encodeURIComponent(id)}` : `/learn/offline/${encodeURIComponent(id)}`
+}
+const openPublishedCourse = (id: string) => {
+  window.location.href = isNativeApp ? `/?course=${encodeURIComponent(id)}` : `/learn/${encodeURIComponent(id)}`
 }
 
 export default function CourseImport() {
@@ -15,8 +19,13 @@ export default function CourseImport() {
   const [courses, setCourses] = useState<ImportedCoursePackage[]>([])
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
+  const [published, setPublished] = useState<PublishedCourseSummary[]>([])
+  const [serverMessage, setServerMessage] = useState('')
 
-  useEffect(() => { void listOfflineCourses().then(setCourses) }, [])
+  useEffect(() => {
+    void listOfflineCourses().then(setCourses)
+    void getAvailableCourses(localStorage.getItem(TOKEN_KEY) || '').then(result => setPublished(result.courses)).catch(reason => setServerMessage(reason instanceof Error ? reason.message : '无法读取服务器素材'))
+  }, [])
   const importFile = async (file?: File) => {
     if (!file) return
     setBusy(true)
@@ -42,6 +51,7 @@ export default function CourseImport() {
       {message && <div className={`course-import-message ${busy ? 'busy' : ''}`}>{message}</div>}
       <div className="course-import-trust"><span><FileArchive/>媒体保存在本机</span><span><ShieldCheck/>导入前验证格式</span></div>
     </section>
+    <section className="offline-library"><div className="offline-library-title"><h2>可阅览内容</h2><span>{published.length} 个</span></div>{published.map(item => <button key={item.id} onClick={() => openPublishedCourse(item.id)}><span className="offline-course-icon"><Play/></span><span><b>{item.title}</b><small>{item.language || '语言学习'} · {Math.round(item.duration / 60)} 分钟 · {item.cueCount} 句{item.visibility === 'selected' ? ' · 专属内容' : ''}</small></span><Play/></button>)}{!published.length && <p className="offline-library-empty">{serverMessage || '当前没有已发布且可阅览的内容'}</p>}</section>
     {courses.length > 0 && <section className="offline-library"><div className="offline-library-title"><h2>本机素材</h2><span>{courses.length} 个</span></div>{courses.map(item => <button key={item.course.id} onClick={() => openCourse(item.course.id)}><span className="offline-course-icon"><Play/></span><span><b>{item.course.title}</b><small>{item.course.language || '语言学习'} · {Math.round(item.course.duration / 60)} 分钟 · {item.course.cues.length} 句</small></span><Play/></button>)}</section>}
   </main>
 }
