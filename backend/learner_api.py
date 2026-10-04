@@ -403,7 +403,7 @@ def list_courses(authorization: Annotated[str | None, Header()] = None) -> dict[
 def get_course(course_id: str, request: Request, authorization: Annotated[str | None, Header()] = None) -> dict[str, object]:
     row = _accessible_course(course_id, authorization)
     course = json.loads(row["manifest"])
-    course["mediaUrl"] = str(request.base_url).rstrip("/") + f"/course-media/{course_id}"
+    course["mediaUrl"] = str(request.url_for("get_course_media", course_id=course_id))
     return course
 
 

@@ -85,6 +85,8 @@ async function loadCourse(): Promise<{ course: LearningCourse; revoke?: () => vo
   const course = await response.json() as LearningCourse
   const mediaResponse = await fetch(course.mediaUrl, { headers })
   if (!mediaResponse.ok) throw new Error('媒体片段加载失败。')
+  const mediaType = mediaResponse.headers.get('content-type') || ''
+  if (!mediaType.startsWith('video/') && !mediaType.startsWith('audio/')) throw new Error('服务器返回的不是有效音视频，请检查媒体接口路径。')
   const mediaUrl = URL.createObjectURL(await mediaResponse.blob())
   return { course: { ...course, mediaUrl }, revoke: () => URL.revokeObjectURL(mediaUrl) }
 }
