@@ -1,6 +1,6 @@
 # EchoLoop 学习端服务器部署
 
-该服务只提供账户、学习进度、统计和反馈。素材下载、语音识别、DeepL、Sudachi和媒体文件继续保留在本地制作端。
+服务器提供学习端网页、账户、学习进度、统计、反馈以及已发布学习片段。素材下载、语音识别、DeepL、Sudachi和完整原媒体继续保留在本地制作端。
 
 ## 1. 安装目录与用户
 
@@ -49,7 +49,13 @@ curl http://127.0.0.1:8010/api/health
 ```bash
 export VITE_LEARNER_API_BASE=https://api.example.com/api
 npm run build
+sudo mkdir -p /var/www/echoloop
+sudo cp -a dist/. /var/www/echoloop/
+sudo chown -R root:root /var/www/echoloop
 ```
+
+Nginx 使用 SPA fallback 后，浏览器访问 `https://api.example.com/learn` 即可进入学习端；
+`/learn/courses` 显示全局公开内容和当前登录邮箱获准使用的内容。私有或已过期内容不会显示。
 
 Android App也必须在打包前设置相同变量。
 
